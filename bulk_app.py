@@ -29,6 +29,8 @@ SENUTO_GROUPS_PATH = OUTPUT_DIR / "leadseason_grupy_branze_do_senuto.xlsx"
 SENUTO_GROUPS_CSV_PATH = OUTPUT_DIR / "leadseason_grupy_branze_do_senuto.csv"
 SENUTO_GROUPS_SCRIPT = BASE_DIR / "scripts" / "build_senuto_groups.py"
 SENUTO_MATRIX_PATH = OUTPUT_DIR / "leadseason_macierz_sezonowosci_senuto.xlsx"
+Q4_CONTACT_BASE_PATH = OUTPUT_DIR / "leadseason_q4_customer_care_do_kontaktu.xlsx"
+Q4_CONTACT_BASE_CSV_PATH = OUTPUT_DIR / "leadseason_q4_customer_care_do_kontaktu.csv"
 MAXUN_EXPERIMENT_PATH = OUTPUT_DIR / "leadseason_maxun_experiment_candidates.xlsx"
 MAXUN_EXPERIMENT_CSV_PATH = OUTPUT_DIR / "leadseason_maxun_experiment_candidates.csv"
 MAXUN_EXPERIMENT_JSONL_PATH = OUTPUT_DIR / "leadseason_maxun_experiment_candidates.jsonl"
@@ -821,6 +823,9 @@ def build_seasonal_leads(df, matrix, today=None):
     today = today or date.today()
     current_idx = today.month - 1
     optional_cols = {
+        "id": "id",
+        "detail_id": "detail_id",
+        "nip": "nip",
         "account_owner": "account_owner",
         "company": "company",
         "service": "service",
@@ -939,6 +944,54 @@ def build_seasonal_leads(df, matrix, today=None):
 
     result = pd.DataFrame(rows)
     return result.sort_values(["miesiecy_do_szczytu", "confidence_sezonowosci"], ascending=[True, False]).reset_index(drop=True)
+
+
+def build_q4_customer_care_base(df, matrix, today=None):
+    if df.empty or matrix.empty:
+        return pd.DataFrame(), {}
+    enriched_df, matched_from_report = enrich_with_category_report(df)
+    leads = add_lead_readiness(build_seasonal_leads(enriched_df, matrix, today=today))
+    if leads.empty:
+        return pd.DataFrame(), {"matched_from_report": matched_from_report}
+
+    q4 = leads[leads["kwartaly_szczytu"].astype(str).str.contains("Q4", na=False)].copy()
+    q4["end_dt"] = pd.to_datetime(q4.get("end_date", ""), errors="coerce")
+    excluded_contract = q4["end_dt"].between(pd.Timestamp("2026-07-01"), pd.Timestamp("2026-12-31"), inclusive="both")
+    ready = q4[~excluded_contract].copy()
+    excluded = q4[excluded_contract].copy()
+
+    ready["wykluczenie_umowa_lip_gru_2026"] = "NIE"
+    ready["status_zadluzenia"] = "BRAK_DANYCH_W_PLIKU"
+    ready["rekomendacja_q4"] = "DO_KONTAKTU_Q4"
+    ready["powod_rekomendacji"] = ready.apply(
+        lambda row: (
+            f"Peak Q4: {row.get('sezon_peak_miesiace', '')}; "
+            f"branża: {row.get('branza_glowna', '')} / {row.get('podbranza', '')}; "
+            f"pewność sezonu: {row.get('confidence_sezonowosci', 0)}"
+        ),
+        axis=1,
+    )
+    ready = ready.sort_values(["score_gotowosci", "confidence_sezonowosci", "mrr"], ascending=[False, False, False]).reset_index(drop=True)
+    ready["ranking_q4"] = range(1, len(ready) + 1)
+
+    client_col = "id" if "id" in ready.columns else None
+    metrics = {
+        "rekordy_baza": len(df),
+        "klienci_baza": df["id"].replace("", pd.NA).dropna().nunique() if "id" in df else 0,
+        "domeny_baza": df["domain_key"].replace("", pd.NA).dropna().nunique() if "domain_key" in df else 0,
+        "rekordy_q4_przed_wykluczeniem": len(q4),
+        "klienci_q4_przed_wykluczeniem": q4["id"].replace("", pd.NA).dropna().nunique() if "id" in q4 else 0,
+        "domeny_q4_przed_wykluczeniem": q4["domain_key"].replace("", pd.NA).dropna().nunique() if "domain_key" in q4 else 0,
+        "wykluczone_umowy_lip_gru_2026": len(excluded),
+        "wykluczeni_klienci_lip_gru_2026": excluded["id"].replace("", pd.NA).dropna().nunique() if "id" in excluded else 0,
+        "do_kontaktu_rekordy": len(ready),
+        "do_kontaktu_klienci": ready[client_col].replace("", pd.NA).dropna().nunique() if client_col else 0,
+        "do_kontaktu_domeny": ready["domain_key"].replace("", pd.NA).dropna().nunique() if "domain_key" in ready else 0,
+        "mrr_do_kontaktu": float(ready["mrr"].sum()) if "mrr" in ready else 0,
+        "matched_from_category_report": matched_from_report,
+        "zadluzenie_status": "Nie odfiltrowano - brak kolumny zadłużenia w pliku źródłowym.",
+    }
+    return ready, metrics
 
 
 def build_action_plan(df, action_type, target_limit=100):
@@ -1147,6 +1200,31 @@ def render_leads_view():
     if matched_from_report:
         caption_bits.append(f"branża dociągnięta z {CATEGORY_REPORT_PATH.name} dla {matched_from_report}/{len(df)} rekordów")
     st.caption(" · ".join(caption_bits))
+
+    q4_ready, q4_metrics = build_q4_customer_care_base(df, matrix)
+    if not q4_ready.empty:
+        st.markdown("### Gotowa baza Q4 dla Customer Care")
+        st.caption("Segment po regule: peak sezonowości w Q4, bez umów kończących się od 2026-07-01 do 2026-12-31. Dłużników nie odfiltrowano, bo w pliku źródłowym nie ma kolumny zadłużenia.")
+        q1, q2, q3, q4c, q5 = st.columns(5)
+        q1.metric("Klienci do kontaktu", fmt_int(q4_metrics.get("do_kontaktu_klienci", 0)))
+        q2.metric("Rekordy do kontaktu", fmt_int(q4_metrics.get("do_kontaktu_rekordy", 0)))
+        q3.metric("Domeny do kontaktu", fmt_int(q4_metrics.get("do_kontaktu_domeny", 0)))
+        q4c.metric("Wykluczone umowy VII-XII", fmt_int(q4_metrics.get("wykluczone_umowy_lip_gru_2026", 0)))
+        q5.metric("MRR do kontaktu", f"{q4_metrics.get('mrr_do_kontaktu', 0):,.0f} zł".replace(",", " "))
+        preview_cols = [
+            "ranking_q4", "id", "detail_id", "nip", "account_owner", "company", "domain_key",
+            "branza_glowna", "podbranza", "sezon_peak_miesiace", "confidence_sezonowosci",
+            "score_gotowosci", "mrr", "end_date", "status_zadluzenia", "powod_rekomendacji",
+        ]
+        st.dataframe(q4_ready[[col for col in preview_cols if col in q4_ready.columns]].head(50), width="stretch", height=260, hide_index=True)
+        summary_df = pd.DataFrame([{"metryka": key, "wartosc": value} for key, value in q4_metrics.items()])
+        st.download_button(
+            "Pobierz gotową bazę Q4 dla Customer Care",
+            xlsx_bytes({"Q4 do kontaktu": q4_ready, "Metryki": summary_df}),
+            file_name=Q4_CONTACT_BASE_PATH.name,
+            mime=OUTPUT_MIME_TYPES[".xlsx"],
+            width="stretch",
+        )
 
     has_mrr = "mrr" in leads and leads["mrr"].sum() > 0
     has_renewal = "miesiecy_do_konca_umowy" in leads and leads["miesiecy_do_konca_umowy"].notna().any()

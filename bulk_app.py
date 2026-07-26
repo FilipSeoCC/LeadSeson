@@ -1059,19 +1059,49 @@ def build_pipeline_status(df, category_data, senuto_groups, senuto_matrix):
 
 
 def enrich_with_category_report(df):
-    if "ai_branza_glowna" in df.columns:
-        return df, 0
     if "domain_key" not in df.columns or not CATEGORY_REPORT_PATH.exists():
         return df, 0
     _, category_data = load_category_report_frames()
     if category_data.empty or "domain_key" not in category_data.columns:
         return df, 0
-    merge_cols = [c for c in ["domain_key", "ai_branza_glowna", "ai_podbranza", "ai_usluga_glowna", "ai_model_b2b_b2c", "ai_confidence"] if c in category_data.columns]
+    report_cols = [
+        "ai_branza_glowna",
+        "ai_podbranza",
+        "ai_usluga_glowna",
+        "ai_model_b2b_b2c",
+        "ai_confidence",
+        "ai_new_category_flag",
+        "category_quality_bucket",
+        "places_status",
+        "places_name",
+        "places_primary_type",
+        "places_types",
+        "places_match_confidence",
+        "places_match_reasons",
+        "places_website",
+        "places_industry_hint",
+    ]
+    merge_cols = ["domain_key"] + [c for c in report_cols if c in category_data.columns]
+    if len(merge_cols) == 1:
+        return df, 0
     lookup = category_data[merge_cols].drop_duplicates("domain_key")
-    merged = df.merge(lookup, on="domain_key", how="left")
-    joined_cols = [c for c in merge_cols if c != "domain_key"]
-    merged[joined_cols] = merged[joined_cols].fillna("")
-    matched = int(merged["ai_branza_glowna"].ne("").sum()) if "ai_branza_glowna" in merged else 0
+    merged = df.merge(lookup, on="domain_key", how="left", suffixes=("", "_report"))
+    for col in merge_cols:
+        if col == "domain_key":
+            continue
+        report_col = f"{col}_report"
+        if report_col not in merged.columns:
+            merged[col] = merged[col].fillna("") if col in merged.columns else ""
+            continue
+        report_values = merged[report_col].fillna("").astype(str)
+        if col in merged.columns:
+            current_values = merged[col].fillna("").astype(str)
+            merged[col] = current_values.where(current_values.str.strip().ne(""), report_values)
+        else:
+            merged[col] = report_values
+        merged = merged.drop(columns=[report_col])
+    signal_cols = [c for c in ["ai_branza_glowna", "places_status"] if c in merged.columns]
+    matched = int(merged[signal_cols].replace("", pd.NA).notna().any(axis=1).sum()) if signal_cols else 0
     return merged, matched
 
 
@@ -1530,7 +1560,7 @@ def render_generator_view():
             disabled=True,
             help="Crawler automatycznie robi wolniejszy retry i browser fallback dla stron z weryfikatorem/anti-botem.",
         )
-        use_places = st.checkbox("Dociągnij dane Google Places/GMB", value=False)
+        use_places = st.checkbox("Dociągnij dane Google Places/GMB", value=True)
         places_api_key = ""
         if use_places:
             places_api_key = st.text_input("Google Places API key", type="password")
@@ -1625,6 +1655,7 @@ def render_dashboard_view():
             get_dashboard_source_frame("dashboard")
         return
 
+    df, matched_from_report = enrich_with_category_report(df)
     df = prepare_dashboard_frame(df)
     render_q4_pipeline_hero(df, source_label)
     with st.expander("Źródło danych i konfiguracja dashboardu", expanded=False):
@@ -1633,6 +1664,11 @@ def render_dashboard_view():
             st.info("Źródło zostało zmienione. Dashboard odświeży się automatycznie po zmianie wyboru.")
     st.caption("Dashboard operacyjny: wielkość bazy, branże, Q4, opiekunowie, MRR i jakość danych.")
     st.caption(f"Źródło: {source_label}")
+    if matched_from_report:
+        st.caption(
+            f"Uzupełniono dane AI/Google Places z raportu `{CATEGORY_REPORT_PATH.name}` "
+            f"dla {matched_from_report:,} rekordów.".replace(",", " ")
+        )
 
     total = len(df)
     unique_clients = df["id"].replace("", pd.NA).dropna().nunique() if "id" in df else 0

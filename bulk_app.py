@@ -45,6 +45,47 @@ OUTPUT_MIME_TYPES = {
 }
 
 Q4_VALUES = {"HIGH", "MEDIUM_HIGH"}
+CRAWL_STATUS_PL = {
+    "OK": "OK - pobrano stronę",
+    "ERROR": "Błąd pobrania",
+    "UNKNOWN": "Nieznany",
+    "Brak danych": "Brak danych",
+}
+SITE_HEALTH_STATUS_PL = {
+    "OK": "OK - dane użyteczne",
+    "FETCH_ERROR": "Błąd pobrania strony",
+    "BLOCKED": "Blokada / weryfikator",
+    "PLACEHOLDER": "Strona techniczna / placeholder",
+    "INACTIVE": "Strona nieaktywna",
+    "PARKED": "Domena zaparkowana",
+    "NO_SIGNAL": "Za mało treści",
+    "UNKNOWN": "Nieznany",
+    "Brak danych": "Brak danych",
+}
+PLACES_STATUS_PL = {
+    "OK": "OK - dopasowano GMB",
+    "NOT_FOUND": "Nie znaleziono w Google",
+    "NO_API_KEY": "Brak klucza API",
+    "ERROR": "Błąd API",
+    "LOW_CONFIDENCE": "Niska pewność dopasowania",
+    "AMBIGUOUS": "Kilka możliwych dopasowań",
+    "SKIPPED": "Pominięto",
+    "Brak danych": "Brak danych",
+}
+CATEGORY_BUCKET_PL = {
+    "AI_PLUS_PLACES": "AI + Google zgodne",
+    "WYSOKA_PEWNOSC_AI": "Wysoka pewność AI",
+    "SREDNIA_AI": "Średnia pewność AI",
+    "NISKA_PEWNOSC_AI": "Niska pewność AI",
+    "DO_WERYFIKACJI": "Do ręcznej weryfikacji",
+    "BRAK_SYGNALU": "Brak sygnału",
+    "Brak danych": "Brak danych",
+}
+
+
+def map_status(value, mapping):
+    text = str(value or "").strip()
+    return mapping.get(text, text or "Brak danych")
 
 CLAUDE_PROMPT = """
 Jesteś analitykiem danych dla WeNet i weryfikujesz branże klientów MŚP do procesu LeadSeason.
@@ -1353,6 +1394,11 @@ def prepare_dashboard_frame(df):
         if col not in df:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str).replace("", "Brak danych")
+    df["crawl_status_pl"] = df["crawl_status"].map(CRAWL_STATUS_PL).fillna(df["crawl_status"])
+    df["site_health_status_pl"] = df["site_health_status"].map(SITE_HEALTH_STATUS_PL).fillna(df["site_health_status"])
+    if "places_status" in df:
+        df["places_status"] = df["places_status"].fillna("").astype(str).replace("", "Brak danych")
+        df["places_status_pl"] = df["places_status"].map(PLACES_STATUS_PL).fillna(df["places_status"])
     return df
 
 
@@ -1628,8 +1674,23 @@ def render_dashboard_view():
         selected_owners = st.multiselect("Opiekun", owners, default=[], placeholder="Wszyscy opiekunowie")
         industries = sorted([item for item in df["detected_industry"].dropna().unique() if str(item)])
         selected_industries = st.multiselect("Branża", industries, default=[], placeholder="Wszystkie branże")
-        healthes = sorted([item for item in df["site_health_status"].dropna().unique() if str(item)])
-        selected_health = st.multiselect("Zdrowie strony", healthes, default=[], placeholder="Wszystkie statusy")
+        health_options = (
+            df[["site_health_status", "site_health_status_pl"]]
+            .drop_duplicates()
+            .sort_values("site_health_status_pl")
+            .to_dict(orient="records")
+        )
+        selected_health_labels = st.multiselect(
+            "Zdrowie strony",
+            [item["site_health_status_pl"] for item in health_options],
+            default=[],
+            placeholder="Wszystkie statusy",
+        )
+        selected_health = [
+            item["site_health_status"]
+            for item in health_options
+            if item["site_health_status_pl"] in selected_health_labels
+        ]
         st.caption("Wpisz, żeby zawęzić listę. Pusty wybór oznacza wszystkie wartości.")
 
     filtered = df.copy()
@@ -1699,43 +1760,47 @@ def render_dashboard_view():
                 st.info("Brak kolumn `seo_basket` / `access_type`.")
 
     elif analysis_section == "Jakość danych":
-        status_counts = top_counts(filtered, "crawl_status", 10)
-        health_counts = top_counts(filtered, "site_health_status", 10)
-        places_counts = top_counts(filtered, "places_status", 10) if "places_status" in filtered else pd.DataFrame()
+        status_counts = top_counts(filtered, "crawl_status_pl", 10)
+        health_counts = top_counts(filtered, "site_health_status_pl", 10)
+        places_counts = top_counts(filtered, "places_status_pl", 10) if "places_status_pl" in filtered else pd.DataFrame()
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             st.markdown("#### Status crawla")
-            st.bar_chart(status_counts.set_index("crawl_status"))
+            st.bar_chart(status_counts.set_index("crawl_status_pl"))
         with col_b:
             st.markdown("#### Zdrowie strony")
             if not health_counts.empty:
-                st.bar_chart(health_counts.set_index("site_health_status"))
+                st.bar_chart(health_counts.set_index("site_health_status_pl"))
                 st.dataframe(health_counts, width="stretch", hide_index=True)
             else:
                 st.info("Brak kolumny `site_health_status` w tym pliku.")
         with col_c:
             st.markdown("#### Status Google Places")
             if not places_counts.empty:
-                st.bar_chart(places_counts.set_index("places_status"))
+                st.bar_chart(places_counts.set_index("places_status_pl"))
+                st.dataframe(places_counts, width="stretch", hide_index=True)
             else:
-                st.info("Brak kolumn Places w tym pliku.")
+                st.info(
+                    "Brak danych Google Places/GMB w tym outputcie. Ten plik został przeliczony bez etapu Places "
+                    "albo bez klucza API. Uruchom ponownie import z opcją `Dociągnij dane Google Places/GMB`."
+                )
 
     elif analysis_section == "Niedziałające strony":
         st.markdown("### Strony niedziałające lub nieużyteczne")
         bad_filtered = filtered[filtered["site_health_status"].astype(str).isin(bad_health_values)] if "site_health_status" in filtered else pd.DataFrame()
-        reason_counts = top_counts(bad_filtered, "site_health_status", 10)
+        reason_counts = top_counts(bad_filtered, "site_health_status_pl", 10)
         col_a, col_b = st.columns([0.9, 1.4])
         with col_a:
             if not reason_counts.empty:
-                st.bar_chart(reason_counts.set_index("site_health_status"))
+                st.bar_chart(reason_counts.set_index("site_health_status_pl"))
                 st.dataframe(reason_counts, width="stretch", hide_index=True)
             else:
                 st.success("W aktualnym filtrze nie ma niedziałających stron.")
         with col_b:
             bad_cols = [
                 col for col in [
-                    "account_owner", "id", "company", "domain_key", "crawl_status",
-                    "site_health_status", "site_health_reason", "http_status", "final_url",
+                    "account_owner", "id", "company", "domain_key", "crawl_status_pl",
+                    "site_health_status_pl", "site_health_reason", "http_status", "final_url",
                     "title", "detected_industry",
                 ] if col in bad_filtered.columns
             ]
@@ -1746,7 +1811,7 @@ def render_dashboard_view():
         display_cols = [
             col for col in [
                 "account_owner", "id", "nip", "company", "domain_key", "detected_industry",
-                "site_health_status", "site_health_reason", "q4_priority", "season_peak", "contact_start",
+                "site_health_status_pl", "site_health_reason", "q4_priority", "season_peak", "contact_start",
             ] if col in filtered.columns
         ]
         st.dataframe(filtered[display_cols].head(500), width="stretch", height=460)
@@ -1879,7 +1944,7 @@ def render_maxun_experiment_view():
     tab_rescue, tab_batch, tab_import, tab_prompt = st.tabs(["Ratunek crawla ERROR", "Paczka testowa branż", "Import wyników", "Instrukcja"])
 
     with tab_rescue:
-        st.markdown("### Druga runda: Maxun dla ERROR / BLOCKED / NO_SIGNAL")
+        st.markdown("### Druga runda: Maxun dla błędów crawla i stron bez sygnału")
         st.markdown(
             """
 <div class="hint">
@@ -1899,10 +1964,10 @@ nie główna metoda dla całej bazy.
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Kandydaci", len(rescue))
             c2.metric("Unikalne domeny", rescue["domain_key"].nunique() if "domain_key" in rescue else 0)
-            c3.metric("Crawl ERROR", int(rescue["crawl_status"].astype(str).eq("ERROR").sum()) if "crawl_status" in rescue else 0)
+            c3.metric("Błąd pobrania", int(rescue["crawl_status"].astype(str).eq("ERROR").sum()) if "crawl_status" in rescue else 0)
             c4.metric("Źródło", active_label or "auto")
             view_cols = [
-                "domain_key", "url", "crawl_status", "site_health_status", "site_health_reason",
+                "domain_key", "url", "crawl_status_pl", "site_health_status_pl", "site_health_reason",
                 "http_status", "error", "title", "company", "account_owner", "rescue_reason",
             ]
             st.dataframe(rescue[[col for col in view_cols if col in rescue.columns]], width="stretch", height=360, hide_index=True)
@@ -2315,6 +2380,8 @@ def select_maxun_crawl_rescue_candidates(df, limit=100, wait_after=18):
         "https://" + rescue["domain_key"].astype(str).str.replace(r"^https?://", "", regex=True).str.strip("/"),
     )
     rescue["wait_after_seconds"] = int(wait_after)
+    rescue["crawl_status_pl"] = rescue["crawl_status"].map(CRAWL_STATUS_PL).fillna(rescue["crawl_status"])
+    rescue["site_health_status_pl"] = rescue["site_health_status"].map(SITE_HEALTH_STATUS_PL).fillna(rescue["site_health_status"])
     rescue["rescue_reason"] = rescue.apply(
         lambda row: "; ".join(
             item for item in [
@@ -2697,6 +2764,11 @@ a stare reguły są tylko punktem porównania.
         return
 
     category_metrics, branch_quality, quality_table, model_table = build_category_metrics(data)
+    data_display = data.copy()
+    if "places_status" in data_display:
+        data_display["places_status_pl"] = data_display["places_status"].map(PLACES_STATUS_PL).fillna(data_display["places_status"])
+    if "category_quality_bucket" in data_display:
+        data_display["category_quality_bucket_pl"] = data_display["category_quality_bucket"].map(CATEGORY_BUCKET_PL).fillna(data_display["category_quality_bucket"])
     domains_count = data["domain_key"].nunique() if "domain_key" in data else len(data)
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Rekordy CRM", metric_value(metrics, "rekordy_w_probce", str(len(data))))
@@ -2712,10 +2784,10 @@ a stare reguły są tylko punktem porównania.
     c9.metric("AI + Places", category_metrics.get("ai_places_domains", 0), pct(category_metrics.get("ai_places_domains", 0), category_metrics.get("domains", 0)))
     c10.metric("Śr. jakość", category_metrics.get("avg_quality", 0))
 
-    quality_counts = data["category_quality_bucket"].value_counts().rename_axis("status").reset_index(name="liczba") if "category_quality_bucket" in data else pd.DataFrame()
+    quality_counts = data_display["category_quality_bucket_pl"].value_counts().rename_axis("status").reset_index(name="liczba") if "category_quality_bucket_pl" in data_display else pd.DataFrame()
     branch_counts = data["ai_branza_glowna"].value_counts().rename_axis("branza_glowna").reset_index(name="liczba") if "ai_branza_glowna" in data else pd.DataFrame()
     subbranch_counts = data["ai_podbranza"].value_counts().rename_axis("podbranza").reset_index(name="liczba") if "ai_podbranza" in data else pd.DataFrame()
-    places_counts = data["places_primary_type"].value_counts().rename_axis("places_primary_type").reset_index(name="liczba") if "places_primary_type" in data else pd.DataFrame()
+    places_counts = data_display["places_primary_type"].value_counts().rename_axis("places_primary_type").reset_index(name="liczba") if "places_primary_type" in data_display else pd.DataFrame()
     review = data[data["category_quality_bucket"].isin(["DO_WERYFIKACJI", "NISKA_PEWNOSC_AI"])] if "category_quality_bucket" in data else pd.DataFrame()
 
     tab_main, tab_branches, tab_places, tab_review, tab_export = st.tabs(["Przegląd", "Branże", "Google Places", "Do weryfikacji", "Eksport"])
@@ -2745,7 +2817,9 @@ a stare reguły są tylko punktem porównania.
             "places_match_confidence",
             "category_quality_bucket",
         ]
-        st.dataframe(data[[col for col in preview_cols if col in data.columns]].head(250), width="stretch", height=430)
+        preview_cols = ["places_status_pl" if col == "places_status" else col for col in preview_cols]
+        preview_cols = ["category_quality_bucket_pl" if col == "category_quality_bucket" else col for col in preview_cols]
+        st.dataframe(data_display[[col for col in preview_cols if col in data_display.columns]].head(250), width="stretch", height=430)
 
     with tab_branches:
         col_a, col_b = st.columns([1.2, 1])
@@ -2758,9 +2832,14 @@ a stare reguły są tylko punktem porównania.
 
     with tab_places:
         st.markdown("### Typy z Google Places")
-        st.dataframe(places_counts, width="stretch", height=300)
-        places_cols = ["company", "domain_key", "places_status", "places_name", "places_primary_type", "places_types", "places_match_confidence", "places_website"]
-        st.dataframe(data[[col for col in places_cols if col in data.columns]], width="stretch", height=380)
+        if "places_status" not in data_display:
+            st.info("Ten raport nie ma kolumn Google Places. Przelicz bazę z opcją `Dociągnij dane Google Places/GMB` albo zbuduj raport po imporcie `places_500.csv`.")
+        else:
+            places_status_counts = top_counts(data_display, "places_status_pl", 10)
+            st.dataframe(places_status_counts, width="stretch", height=180, hide_index=True)
+            st.dataframe(places_counts, width="stretch", height=260)
+            places_cols = ["company", "domain_key", "places_status_pl", "places_name", "places_primary_type", "places_types", "places_match_confidence", "places_website"]
+            st.dataframe(data_display[[col for col in places_cols if col in data_display.columns]], width="stretch", height=380)
 
     with tab_review:
         st.markdown("### Rekordy wymagające ręcznego spojrzenia")

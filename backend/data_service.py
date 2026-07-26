@@ -29,6 +29,28 @@ def _normalize_domain(value):
     return text.strip("/")
 
 
+def _valid_signal_mask(series):
+    norm = series.fillna("").astype(str).str.strip().str.lower()
+    return norm.ne("") & ~norm.isin({"brak danych", "nieokreślona", "nieokreslona", "nan", "do weryfikacji", "-"})
+
+
+def current_industry_mask(df):
+    masks = []
+    for col in ["branza_glowna", "ai_branza_glowna"]:
+        if col in df:
+            masks.append(_valid_signal_mask(df[col]))
+    if "classification_confidence" in df:
+        masks.append(pd.to_numeric(df["classification_confidence"], errors="coerce").fillna(0).gt(0))
+    if "industry_confidence" in df:
+        masks.append(pd.to_numeric(df["industry_confidence"], errors="coerce").fillna(0).gt(0))
+    if not masks:
+        return pd.Series(False, index=df.index)
+    result = masks[0].copy()
+    for mask in masks[1:]:
+        result = result | mask
+    return result.reindex(df.index, fill_value=False)
+
+
 def output_files():
     if not OUTPUT_DIR.exists():
         return []
@@ -136,7 +158,7 @@ def dashboard_summary(path=None):
     q4 = data[data["q4_priority"].isin(Q4_VALUES)]
     bad = data[data["site_health_status"].isin(BAD_SITE_HEALTH)]
     usable = data.get("usable_for_llm", pd.Series([""] * total)).astype(str).str.lower().isin(["true", "1", "tak", "yes"]).sum()
-    detected = pd.to_numeric(data.get("industry_confidence", 0), errors="coerce").fillna(0).gt(0).sum() if "industry_confidence" in data else data["branza_glowna"].ne("").sum()
+    industry_detected = int(current_industry_mask(data).sum())
     return {
         "source": label,
         "records": int(total),
@@ -151,7 +173,8 @@ def dashboard_summary(path=None):
         "crawl_ok_records": int(data["crawl_status"].eq("OK").sum()),
         "usable_for_llm_records": int(usable),
         "bad_site_records": int(len(bad)),
-        "industry_detected_records": int(detected),
+        "industry_detected_records": industry_detected,
+        "industry_review_records": int(max(total - industry_detected, 0)),
         "review_records": int(data["q4_priority"].eq("DO_WERYFIKACJI").sum()),
     }
 

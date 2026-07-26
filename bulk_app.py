@@ -1536,6 +1536,30 @@ def metric_percent(part, total):
     return f"{part / total * 100:.1f}%"
 
 
+def valid_signal_mask(series):
+    norm = series.fillna("").astype(str).str.strip().str.lower()
+    return norm.ne("") & ~norm.isin(["brak danych", "nieokreślona", "nieokreslona", "nan", "do weryfikacji", "-"])
+
+
+def current_industry_mask(df):
+    if df.empty:
+        return pd.Series(dtype=bool)
+    masks = []
+    for col in ["branza_glowna", "ai_branza_glowna"]:
+        if col in df:
+            masks.append(valid_signal_mask(df[col]))
+    if "classification_confidence" in df:
+        masks.append(pd.to_numeric(df["classification_confidence"], errors="coerce").fillna(0).gt(0))
+    if "industry_confidence" in df:
+        masks.append(pd.to_numeric(df["industry_confidence"], errors="coerce").fillna(0).gt(0))
+    if not masks:
+        return pd.Series(False, index=df.index)
+    result = masks[0].copy()
+    for mask in masks[1:]:
+        result = result | mask
+    return result.reindex(df.index, fill_value=False)
+
+
 def top_counts(df, column, limit=12):
     if column not in df or df.empty:
         return pd.DataFrame(columns=[column, "liczba"])
@@ -1570,7 +1594,9 @@ def render_dashboard_view():
     bad_site_df = df[df["site_health_status"].astype(str).isin(bad_health_values)] if "site_health_status" in df else pd.DataFrame()
     usable_for_llm = int(df["usable_for_llm"].astype(str).str.lower().isin(["true", "1", "tak", "yes"]).sum()) if "usable_for_llm" in df else ok_rows
     retry_saved = int(df["crawl_retry_reason"].astype(str).str.contains("improved site health", case=False, na=False).sum()) if "crawl_retry_reason" in df else 0
-    detected_rows = int((pd.to_numeric(df.get("industry_confidence", 0), errors="coerce").fillna(0) > 0).sum()) if "industry_confidence" in df else 0
+    industry_ready_mask = current_industry_mask(df)
+    detected_rows = int(industry_ready_mask.sum())
+    industry_review_rows = max(total - detected_rows, 0)
     mrr_sum = df["_mrr_num"].sum()
     mrr_coverage = int((df["_mrr_num"] > 0).sum())
 
@@ -1586,8 +1612,8 @@ def render_dashboard_view():
     c7.metric("Strony użyteczne", metric_percent(usable_for_llm, total), f"{usable_for_llm} dla LLM")
     c8.metric("Strony niedziałające", metric_percent(len(bad_site_df), total), f"{len(bad_site_df)} rekordów")
     c9.metric("Uratowane retry", retry_saved)
-    c10.metric("Branża wykryta", metric_percent(detected_rows, total), f"{detected_rows} rekordów")
-    c11.metric("Do weryfikacji", metric_percent(len(review_df), total), f"{len(review_df)} rekordów")
+    c10.metric("Branża przypisana", metric_percent(detected_rows, total), f"{detected_rows} po aktualnym pipeline")
+    c11.metric("Branża do AI/weryfikacji", metric_percent(industry_review_rows, total), f"{industry_review_rows} rekordów")
 
     filters_col, table_col = st.columns([.8, 1.4])
     with filters_col:
@@ -2879,7 +2905,7 @@ def render_results_tabs(df, output_path=None, summary_path=None):
     c1.metric("Rekordy", len(df))
     c2.metric("Rekordy sezonowe", len(q4_df))
     c3.metric("Do weryfikacji", len(review_df))
-    c4.metric("Branże wykryte", int((pd.to_numeric(df.get("industry_confidence", 0), errors="coerce").fillna(0) > 0).sum()) if "industry_confidence" in df else 0)
+    c4.metric("Branże przypisane", int(current_industry_mask(df).sum()))
 
     tab_q4, tab_all, tab_review, tab_export = st.tabs(["Sezonowe", "Wszystkie rekordy", "Do weryfikacji", "Eksport"])
     q4_cols = [

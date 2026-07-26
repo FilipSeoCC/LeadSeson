@@ -480,6 +480,101 @@ p, label, .stCaption, [data-testid="stCaptionContainer"] { color: var(--text-sec
   border-bottom: 1px solid var(--accent-border);
 }
 .hint * { color: var(--text) !important; }
+.decision-card {
+  margin: 0 0 18px;
+  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(251,146,60,.14), rgba(17,24,39,.92) 34%, rgba(5,7,12,.94));
+  box-shadow: var(--shadow-soft);
+}
+.decision-card h3 {
+  margin: 0 0 6px !important;
+  color: var(--on-dark) !important;
+}
+.decision-card p {
+  margin: 0;
+  max-width: 980px;
+  color: var(--on-dark-muted) !important;
+  line-height: 1.5;
+}
+.decision-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.decision-item {
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: var(--radius-sm);
+  background: rgba(5,7,12,.48);
+  padding: 10px 12px;
+  min-height: 78px;
+}
+.decision-item strong {
+  display: block;
+  color: var(--on-dark) !important;
+  font-size: 1.28rem;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+.decision-item span {
+  display: block;
+  margin-top: 6px;
+  color: var(--on-dark-muted) !important;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.decision-note {
+  margin-top: 10px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(251,146,60,.24);
+  background: rgba(251,146,60,.10);
+  color: #ffedd5 !important;
+  font-size: 12px;
+  font-weight: 700;
+}
+.table-shell {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: auto;
+  box-shadow: var(--shadow-soft);
+  background: rgba(5,7,12,.70);
+  max-height: 360px;
+}
+table.dark-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  color: var(--on-dark);
+}
+table.dark-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  color: #fed7aa;
+  background: #111827;
+  border-bottom: 1px solid rgba(251,146,60,.28);
+  padding: 9px 10px;
+  white-space: nowrap;
+}
+table.dark-table td {
+  border-bottom: 1px solid rgba(255,255,255,.07);
+  padding: 9px 10px;
+  color: var(--on-dark-muted);
+  vertical-align: top;
+  white-space: nowrap;
+}
+table.dark-table tr:hover td {
+  background: rgba(251,146,60,.08);
+  color: var(--on-dark);
+}
 .badge {
   display: inline-block;
   padding: 3px 10px;
@@ -496,6 +591,13 @@ p, label, .stCaption, [data-testid="stCaptionContainer"] { color: var(--text-sec
   overflow: hidden;
   font-variant-numeric: tabular-nums;
   box-shadow: var(--shadow-soft);
+}
+[data-testid="stDataFrame"] div[role="gridcell"],
+[data-testid="stDataFrame"] div[role="columnheader"] {
+  font-size: 12px;
+}
+[data-testid="stDataFrame"] div[role="columnheader"] {
+  font-weight: 760;
 }
 [data-baseweb="select"] > div {
   border: 1px solid var(--border) !important;
@@ -585,6 +687,7 @@ hr { border-color: var(--border) !important; }
   .mini-grid { grid-template-columns: 1fr; }
   .hero-layout { grid-template-columns: 1fr; }
   .hero-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .decision-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topbar { padding: 16px; }
   [data-testid="stMetric"] { min-height: 84px; }
 }
@@ -622,6 +725,20 @@ def fmt_int(value):
         return f"{int(value):,}".replace(",", " ")
     except (TypeError, ValueError):
         return "0"
+
+
+def render_dark_table(df, columns, labels=None, limit=12):
+    if df.empty:
+        st.info("Brak rekordów do pokazania.")
+        return
+    labels = labels or {}
+    existing = [col for col in columns if col in df.columns]
+    if not existing:
+        st.info("Brak kolumn do pokazania.")
+        return
+    table = df[existing].head(limit).rename(columns=labels).copy()
+    html = table.to_html(index=False, classes="dark-table", border=0, escape=True)
+    st.markdown(f'<div class="table-shell">{html}</div>', unsafe_allow_html=True)
 
 
 def render_q4_pipeline_hero(df, source_label):
@@ -946,11 +1063,7 @@ def build_seasonal_leads(df, matrix, today=None):
     return result.sort_values(["miesiecy_do_szczytu", "confidence_sezonowosci"], ascending=[True, False]).reset_index(drop=True)
 
 
-def build_q4_customer_care_base(df, matrix, today=None):
-    if df.empty or matrix.empty:
-        return pd.DataFrame(), {}
-    enriched_df, matched_from_report = enrich_with_category_report(df)
-    leads = add_lead_readiness(build_seasonal_leads(enriched_df, matrix, today=today))
+def build_q4_customer_care_base_from_leads(leads, source_df=None, matched_from_report=0):
     if leads.empty:
         return pd.DataFrame(), {"matched_from_report": matched_from_report}
 
@@ -975,10 +1088,11 @@ def build_q4_customer_care_base(df, matrix, today=None):
     ready["ranking_q4"] = range(1, len(ready) + 1)
 
     client_col = "id" if "id" in ready.columns else None
+    source_df = source_df if source_df is not None else pd.DataFrame()
     metrics = {
-        "rekordy_baza": len(df),
-        "klienci_baza": df["id"].replace("", pd.NA).dropna().nunique() if "id" in df else 0,
-        "domeny_baza": df["domain_key"].replace("", pd.NA).dropna().nunique() if "domain_key" in df else 0,
+        "rekordy_baza": len(source_df) if not source_df.empty else len(leads),
+        "klienci_baza": source_df["id"].replace("", pd.NA).dropna().nunique() if "id" in source_df else 0,
+        "domeny_baza": source_df["domain_key"].replace("", pd.NA).dropna().nunique() if "domain_key" in source_df else 0,
         "rekordy_q4_przed_wykluczeniem": len(q4),
         "klienci_q4_przed_wykluczeniem": q4["id"].replace("", pd.NA).dropna().nunique() if "id" in q4 else 0,
         "domeny_q4_przed_wykluczeniem": q4["domain_key"].replace("", pd.NA).dropna().nunique() if "domain_key" in q4 else 0,
@@ -992,6 +1106,14 @@ def build_q4_customer_care_base(df, matrix, today=None):
         "zadluzenie_status": "Nie odfiltrowano - brak kolumny zadłużenia w pliku źródłowym.",
     }
     return ready, metrics
+
+
+def build_q4_customer_care_base(df, matrix, today=None):
+    if df.empty or matrix.empty:
+        return pd.DataFrame(), {}
+    enriched_df, matched_from_report = enrich_with_category_report(df)
+    leads = add_lead_readiness(build_seasonal_leads(enriched_df, matrix, today=today))
+    return build_q4_customer_care_base_from_leads(leads, source_df=df, matched_from_report=matched_from_report)
 
 
 def build_action_plan(df, action_type, target_limit=100):
@@ -1023,7 +1145,7 @@ def build_action_plan(df, action_type, target_limit=100):
 
     plan = plan.sort_values("_rank_score", ascending=False).head(int(target_limit or 100)).copy()
     plan["plan_dzialania"] = action_label
-    plan["status_realizacji"] = "DO_ZAPLANOWANIA"
+    plan["status_realizacji"] = "Do zaplanowania"
     plan["owner_planu"] = plan.get("account_owner", "")
     plan["ranking"] = range(1, len(plan) + 1)
     plan["powod_wyboru"] = plan.apply(
@@ -1201,30 +1323,78 @@ def render_leads_view():
         caption_bits.append(f"branża dociągnięta z {CATEGORY_REPORT_PATH.name} dla {matched_from_report}/{len(df)} rekordów")
     st.caption(" · ".join(caption_bits))
 
-    q4_ready, q4_metrics = build_q4_customer_care_base(df, matrix)
+    q4_ready, q4_metrics = build_q4_customer_care_base_from_leads(leads, source_df=df, matched_from_report=matched_from_report)
     if not q4_ready.empty:
-        st.markdown("### Gotowa baza Q4 dla Customer Care")
-        st.caption("Segment po regule: peak sezonowości w Q4, bez umów kończących się od 2026-07-01 do 2026-12-31. Dłużników nie odfiltrowano, bo w pliku źródłowym nie ma kolumny zadłużenia.")
-        q1, q2, q3, q4c, q5 = st.columns(5)
-        q1.metric("Klienci do kontaktu", fmt_int(q4_metrics.get("do_kontaktu_klienci", 0)))
-        q2.metric("Rekordy do kontaktu", fmt_int(q4_metrics.get("do_kontaktu_rekordy", 0)))
-        q3.metric("Domeny do kontaktu", fmt_int(q4_metrics.get("do_kontaktu_domeny", 0)))
-        q4c.metric("Wykluczone umowy VII-XII", fmt_int(q4_metrics.get("wykluczone_umowy_lip_gru_2026", 0)))
-        q5.metric("MRR do kontaktu", f"{q4_metrics.get('mrr_do_kontaktu', 0):,.0f} zł".replace(",", " "))
-        preview_cols = [
-            "ranking_q4", "id", "detail_id", "nip", "account_owner", "company", "domain_key",
-            "branza_glowna", "podbranza", "sezon_peak_miesiace", "confidence_sezonowosci",
-            "score_gotowosci", "mrr", "end_date", "status_zadluzenia", "powod_rekomendacji",
-        ]
-        st.dataframe(q4_ready[[col for col in preview_cols if col in q4_ready.columns]].head(50), width="stretch", height=260, hide_index=True)
-        summary_df = pd.DataFrame([{"metryka": key, "wartosc": value} for key, value in q4_metrics.items()])
-        st.download_button(
-            "Pobierz gotową bazę Q4 dla Customer Care",
-            xlsx_bytes({"Q4 do kontaktu": q4_ready, "Metryki": summary_df}),
-            file_name=Q4_CONTACT_BASE_PATH.name,
-            mime=OUTPUT_MIME_TYPES[".xlsx"],
-            width="stretch",
+        q4_mrr_label = f"{q4_metrics.get('mrr_do_kontaktu', 0):,.0f} zł".replace(",", " ")
+        st.markdown(
+            f"""
+<div class="decision-card">
+  <div class="kicker">Gotowa decyzja operacyjna</div>
+  <h3>Baza Q4 dla Customer Care jest gotowa do pracy</h3>
+  <p>
+    Reguła: bierzemy klientów z potwierdzonym pikiem sezonowości w Q4 i odcinamy umowy kończące się
+    od 2026-07-01 do 2026-12-31. Zadłużenia nie odcinamy, bo w aktualnym pliku nie ma takiej kolumny.
+  </p>
+  <div class="decision-grid">
+    <div class="decision-item"><strong>{fmt_int(q4_metrics.get("do_kontaktu_klienci", 0))}</strong><span>klientów do kontaktu</span></div>
+    <div class="decision-item"><strong>{fmt_int(q4_metrics.get("do_kontaktu_domeny", 0))}</strong><span>domen w kolejce Q4</span></div>
+    <div class="decision-item"><strong>{fmt_int(q4_metrics.get("wykluczone_umowy_lip_gru_2026", 0))}</strong><span>rekordów wykluczonych przez koniec umowy</span></div>
+    <div class="decision-item"><strong>{q4_mrr_label}</strong><span>MRR w kolejce Q4</span></div>
+  </div>
+  <div class="decision-note">Źródło: pełna baza 4266 rekordów + macierz sezonowości Senuto</div>
+</div>
+""",
+            unsafe_allow_html=True,
         )
+        preview_cols = [
+            "ranking_q4", "id", "account_owner", "company", "domain_key",
+            "branza_glowna", "sezon_peak_miesiace", "confidence_sezonowosci",
+            "score_gotowosci", "mrr",
+        ]
+        summary_df = pd.DataFrame([{"metryka": key, "wartosc": value} for key, value in q4_metrics.items()])
+        q4_preview = q4_ready.copy()
+        if "mrr" in q4_preview:
+            q4_preview["mrr"] = q4_preview["mrr"].map(lambda value: f"{float(value):,.0f} zł".replace(",", " ") if pd.notna(value) else "0 zł")
+        q4_table, q4_action = st.columns([1.5, 0.5])
+        with q4_table:
+            st.markdown("### Pierwsze rekordy w kolejce")
+            render_dark_table(
+                q4_preview,
+                preview_cols,
+                labels={
+                    "ranking_q4": "#",
+                    "id": "Id klienta",
+                    "account_owner": "Opiekun",
+                    "company": "Firma",
+                    "domain_key": "Domena",
+                    "branza_glowna": "Branża",
+                    "sezon_peak_miesiace": "Peak",
+                    "confidence_sezonowosci": "Pewność",
+                    "score_gotowosci": "Score",
+                    "mrr": "MRR",
+                },
+                limit=14,
+            )
+        with q4_action:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.markdown("### Eksport Q4")
+            st.caption("XLSX zawiera kolejkę, metryki i dane pomocnicze do pracy zespołu.")
+            st.download_button(
+                "Pobierz bazę Q4",
+                xlsx_bytes({"Q4 do kontaktu": q4_ready, "Metryki": summary_df}),
+                file_name=Q4_CONTACT_BASE_PATH.name,
+                mime=OUTPUT_MIME_TYPES[".xlsx"],
+                width="stretch",
+            )
+            if Q4_CONTACT_BASE_CSV_PATH.exists():
+                st.download_button(
+                    "Pobierz CSV",
+                    Q4_CONTACT_BASE_CSV_PATH.read_bytes(),
+                    file_name=Q4_CONTACT_BASE_CSV_PATH.name,
+                    mime=OUTPUT_MIME_TYPES[".csv"],
+                    width="stretch",
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
 
     has_mrr = "mrr" in leads and leads["mrr"].sum() > 0
     has_renewal = "miesiecy_do_konca_umowy" in leads and leads["miesiecy_do_konca_umowy"].notna().any()
@@ -1341,7 +1511,7 @@ def render_leads_view():
             "miesiecy_do_konca_umowy": st.column_config.NumberColumn("Mies. do końca umowy"),
             "status_realizacji": st.column_config.SelectboxColumn(
                 "Status",
-                options=["DO_ZAPLANOWANIA", "W_TRAKCIE", "ZROBIONE", "ODŁOŻONE", "DO_WERYFIKACJI"],
+                options=["Do zaplanowania", "W trakcie", "Zrobione", "Odłożone", "Do weryfikacji"],
             ),
         }
         st.data_editor(

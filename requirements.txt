@@ -1,0 +1,10 @@
+pandas
+openpyxl
+requests
+beautifulsoup4
+streamlit
+uvicorn
+fastapi
+pydantic
+python-multipart
+playwright

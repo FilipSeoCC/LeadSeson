@@ -1,0 +1,4 @@
+id,detail_id,nip,domain,company,service,account_owner,publication_code,seo_basket,access_type,start_date,end_date,monthly_value
+100001,200001,1111111111,https://example-hvac.pl,Demo HVAC Sp. z o.o.,SEO_LOKV,Demo Opiekun,AFFV,Standard,User,2026-01-01,2026-12-31,1200
+100002,200002,2222222222,https://example-stomatologia.pl,Demo Dental Sp. z o.o.,SEO_Z,Demo Opiekun,AFFV,Premium,User,2026-02-01,2027-01-31,1800
+100003,200003,3333333333,https://example-restauracja.pl,Demo Bistro Sp. z o.o.,SEO_KSTV,Demo Opiekun,AFFV,Standard,User,2026-03-01,2027-02-28,950

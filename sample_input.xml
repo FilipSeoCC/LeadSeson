@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<clients>
+  <client>
+    <id>100001</id>
+    <detail_id>200001</detail_id>
+    <nip>1111111111</nip>
+    <domena>example-hvac.pl</domena>
+    <firma>Demo HVAC Sp. z o.o.</firma>
+    <typ_umowy>SEO_LOKV</typ_umowy>
+  </client>
+  <client>
+    <id>100002</id>
+    <detail_id>200002</detail_id>
+    <nip>2222222222</nip>
+    <domena>example-stomatologia.pl</domena>
+    <firma>Demo Dental Sp. z o.o.</firma>
+    <typ_umowy>SEO_Z</typ_umowy>
+  </client>
+</clients>

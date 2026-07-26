@@ -2136,9 +2136,10 @@ def render_dashboard_view():
 
 def render_claude_view():
     st.caption("Klasyfikacja branż: eksport danych po crawlu, import klasyfikacji LLM i kontrola rekordów niepewnych.")
-    df, source_label = get_dashboard_source_frame("claude")
+    df, source_label = resolve_dashboard_source_frame("claude")
     if df.empty:
         st.info("Wybierz plik wynikowy albo przelicz bazę w widoku Import i enrichment.")
+        get_dashboard_source_frame("claude")
         return
 
     df = prepare_dashboard_frame(df)
@@ -2146,6 +2147,10 @@ def render_claude_view():
     eligible_count = int(eligible_mask.sum())
     total = len(df)
     st.caption(f"Źródło: {source_label}")
+    with st.expander("Zmień źródło danych", expanded=False):
+        configured_df, configured_label = get_dashboard_source_frame("claude")
+        if not configured_df.empty and configured_label != source_label:
+            st.info("Źródło zostało zmienione. Widok odświeży się automatycznie po zmianie wyboru.")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Rekordy w bazie", total)

@@ -33,6 +33,10 @@ MAXUN_EXPERIMENT_PATH = OUTPUT_DIR / "leadseason_maxun_experiment_candidates.xls
 MAXUN_EXPERIMENT_CSV_PATH = OUTPUT_DIR / "leadseason_maxun_experiment_candidates.csv"
 MAXUN_EXPERIMENT_JSONL_PATH = OUTPUT_DIR / "leadseason_maxun_experiment_candidates.jsonl"
 MAXUN_RESULTS_PATH = OUTPUT_DIR / "leadseason_maxun_experiment_results.xlsx"
+MAXUN_RESCUE_PATH = OUTPUT_DIR / "leadseason_maxun_crawl_rescue_candidates.xlsx"
+MAXUN_RESCUE_CSV_PATH = OUTPUT_DIR / "leadseason_maxun_crawl_rescue_candidates.csv"
+MAXUN_RESCUE_JSONL_PATH = OUTPUT_DIR / "leadseason_maxun_crawl_rescue_candidates.jsonl"
+MAXUN_RESCUE_RESULTS_PATH = OUTPUT_DIR / "leadseason_maxun_crawl_rescue_results.xlsx"
 
 OUTPUT_MIME_TYPES = {
     ".csv": "text/csv",
@@ -1869,69 +1873,123 @@ def render_claude_view():
 def render_maxun_experiment_view():
     st.caption("Eksperyment Maxun: sprawdź, czy browserowy scrape/crawl poprawia rekordy z niepewną branżą.")
     _, category_data = load_category_report_frames()
+    active_df, active_label = auto_pick_dataset()
+    active_df = prepare_dashboard_frame(active_df) if not active_df.empty else active_df
 
-    if category_data.empty:
-        st.info("Brak raportu kategoryzacji. Najpierw zbuduj lub wgraj raport w widoku Jakość kategoryzacji.")
-        return
+    tab_rescue, tab_batch, tab_import, tab_prompt = st.tabs(["Ratunek crawla ERROR", "Paczka testowa branż", "Import wyników", "Instrukcja"])
 
-    tab_batch, tab_import, tab_prompt = st.tabs(["Paczka testowa", "Import wyników", "Instrukcja"])
-
-    with tab_batch:
-        st.markdown("### Kandydaci do testu Maxun")
+    with tab_rescue:
+        st.markdown("### Druga runda: Maxun dla ERROR / BLOCKED / NO_SIGNAL")
         st.markdown(
             """
+<div class="hint">
+Ten etap bierze domeny, których nasz szybki crawler nie ogarnął albo zebrał za mało sygnału.
+Maxun/Chrome ma wejść wolniej, poczekać na weryfikatory i zebrać tekst do LLM. To jest ratunek jakości,
+nie główna metoda dla całej bazy.
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        if active_df.empty:
+            st.info("Brak aktywnej bazy. Najpierw wybierz albo przelicz plik w dashboardzie/zasileniu danych.")
+        else:
+            rescue_limit = st.number_input("Limit domen do ratunku", min_value=10, max_value=500, value=100, step=10, key="maxun_rescue_limit")
+            wait_after = st.slider("Opóźnienie po wejściu na stronę", min_value=5, max_value=45, value=18, step=1, key="maxun_rescue_wait")
+            rescue = select_maxun_crawl_rescue_candidates(active_df, limit=int(rescue_limit), wait_after=int(wait_after))
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Kandydaci", len(rescue))
+            c2.metric("Unikalne domeny", rescue["domain_key"].nunique() if "domain_key" in rescue else 0)
+            c3.metric("Crawl ERROR", int(rescue["crawl_status"].astype(str).eq("ERROR").sum()) if "crawl_status" in rescue else 0)
+            c4.metric("Źródło", active_label or "auto")
+            view_cols = [
+                "domain_key", "url", "crawl_status", "site_health_status", "site_health_reason",
+                "http_status", "error", "title", "company", "account_owner", "rescue_reason",
+            ]
+            st.dataframe(rescue[[col for col in view_cols if col in rescue.columns]], width="stretch", height=360, hide_index=True)
+            records = build_maxun_crawl_rescue_records(rescue, wait_after=int(wait_after))
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                if st.button("Zapisz paczkę ratunkową", type="primary", width="stretch"):
+                    save_maxun_crawl_rescue_batch(rescue, wait_after=int(wait_after))
+                    st.success(f"Zapisano `{MAXUN_RESCUE_PATH.name}` oraz JSONL.")
+            with col_b:
+                if records:
+                    st.download_button(
+                        "Pobierz JSONL ratunkowy",
+                        jsonl_bytes(records),
+                        file_name=MAXUN_RESCUE_JSONL_PATH.name,
+                        mime="application/jsonl",
+                        width="stretch",
+                    )
+            with col_c:
+                if MAXUN_RESCUE_PATH.exists():
+                    st.download_button(
+                        "Pobierz paczkę XLSX",
+                        MAXUN_RESCUE_PATH.read_bytes(),
+                        file_name=MAXUN_RESCUE_PATH.name,
+                        mime=OUTPUT_MIME_TYPES[".xlsx"],
+                        width="stretch",
+                    )
+
+    with tab_batch:
+        if category_data.empty:
+            st.info("Brak raportu kategoryzacji. Najpierw zbuduj lub wgraj raport w widoku Jakość kategoryzacji.")
+        else:
+            st.markdown("### Kandydaci do testu Maxun")
+            st.markdown(
+                """
 <div class="hint">
 Wybieramy domeny, gdzie obecny proces ma niski confidence, bucket do weryfikacji, brak branży albo słaby sygnał Places.
 Maxun ma zebrać bogatszy materiał ze strony, a potem LLM może ponownie zweryfikować branżę.
 </div>
 """,
-            unsafe_allow_html=True,
-        )
-        limit = st.number_input("Limit kandydatów", min_value=5, max_value=200, value=50, step=5)
-        candidates = select_maxun_experiment_candidates(category_data, limit=int(limit))
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Kandydaci", len(candidates))
-        c2.metric("Unikalne domeny", candidates["domain_key"].nunique() if "domain_key" in candidates else 0)
-        c3.metric("Nieokreślone", int(candidates["ai_branza_glowna"].astype(str).str.lower().isin(["nieokreślona", "nieokreslona", ""]).sum()) if "ai_branza_glowna" in candidates else 0)
-
-        view_cols = [
-            "domain_key", "company", "url", "ai_branza_glowna", "ai_podbranza",
-            "ai_confidence", "category_quality_bucket", "places_status", "places_match_confidence", "powod_eksperymentu",
-        ]
-        st.dataframe(candidates[[col for col in view_cols if col in candidates.columns]], width="stretch", height=360)
-
-        if st.button("Zapisz paczkę eksperymentu", type="primary", width="stretch"):
-            save_maxun_experiment_batch(candidates)
-            st.success(f"Zapisano paczkę: `{MAXUN_EXPERIMENT_PATH.name}`, CSV i JSONL.")
-
-        col_a, col_b, col_c = st.columns(3)
-        records = build_maxun_experiment_records(candidates)
-        with col_a:
-            if records:
-                st.download_button(
-                    "Pobierz JSONL do Maxun",
-                    jsonl_bytes(records),
-                    file_name=MAXUN_EXPERIMENT_JSONL_PATH.name,
-                    mime="application/jsonl",
-                    width="stretch",
-                )
-        with col_b:
-            st.download_button(
-                "Pobierz instrukcję",
-                MAXUN_EXPERIMENT_PROMPT.encode("utf-8"),
-                file_name="leadseason_instrukcja_maxun_experiment.txt",
-                mime="text/plain",
-                width="stretch",
+                unsafe_allow_html=True,
             )
-        with col_c:
-            if MAXUN_EXPERIMENT_PATH.exists():
+            limit = st.number_input("Limit kandydatów", min_value=5, max_value=200, value=50, step=5)
+            candidates = select_maxun_experiment_candidates(category_data, limit=int(limit))
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Kandydaci", len(candidates))
+            c2.metric("Unikalne domeny", candidates["domain_key"].nunique() if "domain_key" in candidates else 0)
+            c3.metric("Nieokreślone", int(candidates["ai_branza_glowna"].astype(str).str.lower().isin(["nieokreślona", "nieokreslona", ""]).sum()) if "ai_branza_glowna" in candidates else 0)
+
+            view_cols = [
+                "domain_key", "company", "url", "ai_branza_glowna", "ai_podbranza",
+                "ai_confidence", "category_quality_bucket", "places_status", "places_match_confidence", "powod_eksperymentu",
+            ]
+            st.dataframe(candidates[[col for col in view_cols if col in candidates.columns]], width="stretch", height=360)
+
+            if st.button("Zapisz paczkę eksperymentu", type="primary", width="stretch"):
+                save_maxun_experiment_batch(candidates)
+                st.success(f"Zapisano paczkę: `{MAXUN_EXPERIMENT_PATH.name}`, CSV i JSONL.")
+
+            col_a, col_b, col_c = st.columns(3)
+            records = build_maxun_experiment_records(candidates)
+            with col_a:
+                if records:
+                    st.download_button(
+                        "Pobierz JSONL do Maxun",
+                        jsonl_bytes(records),
+                        file_name=MAXUN_EXPERIMENT_JSONL_PATH.name,
+                        mime="application/jsonl",
+                        width="stretch",
+                    )
+            with col_b:
                 st.download_button(
-                    "Pobierz paczkę XLSX",
-                    MAXUN_EXPERIMENT_PATH.read_bytes(),
-                    file_name=MAXUN_EXPERIMENT_PATH.name,
-                    mime=OUTPUT_MIME_TYPES[".xlsx"],
+                    "Pobierz instrukcję",
+                    MAXUN_EXPERIMENT_PROMPT.encode("utf-8"),
+                    file_name="leadseason_instrukcja_maxun_experiment.txt",
+                    mime="text/plain",
                     width="stretch",
                 )
+            with col_c:
+                if MAXUN_EXPERIMENT_PATH.exists():
+                    st.download_button(
+                        "Pobierz paczkę XLSX",
+                        MAXUN_EXPERIMENT_PATH.read_bytes(),
+                        file_name=MAXUN_EXPERIMENT_PATH.name,
+                        mime=OUTPUT_MIME_TYPES[".xlsx"],
+                        width="stretch",
+                    )
 
     with tab_import:
         st.markdown("### Wynik eksperymentu")
@@ -2223,6 +2281,108 @@ def select_maxun_experiment_candidates(category_data, limit=50):
         axis=1,
     )
     return work.drop(columns=["_uncertainty_score"], errors="ignore")
+
+
+def select_maxun_crawl_rescue_candidates(df, limit=100, wait_after=18):
+    if df.empty:
+        return pd.DataFrame()
+    work = df.copy()
+    for col in [
+        "domain_key", "domain", "company", "account_owner", "crawl_status",
+        "site_health_status", "site_health_reason", "http_status", "error",
+        "title", "meta_description", "final_url", "site_text_chars",
+    ]:
+        if col not in work.columns:
+            work[col] = ""
+    crawl_status = work["crawl_status"].astype(str).str.upper()
+    health = work["site_health_status"].astype(str).str.upper()
+    text_chars = pd.to_numeric(work["site_text_chars"], errors="coerce").fillna(0)
+    rescue_mask = (
+        crawl_status.eq("ERROR")
+        | health.isin(["FETCH_ERROR", "BLOCKED", "NO_SIGNAL"])
+        | (crawl_status.eq("OK") & health.isin(["BLOCKED", "NO_SIGNAL"]) & text_chars.lt(1000))
+    )
+    rescue = work[rescue_mask].copy()
+    if rescue.empty:
+        return rescue
+    rescue["domain_key"] = rescue["domain_key"].where(rescue["domain_key"].astype(str).str.strip().ne(""), rescue["domain"].astype(str))
+    rescue = rescue.drop_duplicates("domain_key", keep="first")
+    status_rank = crawl_status.reindex(rescue.index).map({"ERROR": 100, "OK": 20}).fillna(10)
+    health_rank = health.reindex(rescue.index).map({"FETCH_ERROR": 80, "BLOCKED": 70, "NO_SIGNAL": 60}).fillna(0)
+    rescue["_rescue_score"] = status_rank + health_rank + (1000 - text_chars.reindex(rescue.index).clip(0, 1000)) / 25
+    rescue["url"] = rescue["domain"].where(
+        rescue["domain"].astype(str).str.startswith(("http://", "https://")),
+        "https://" + rescue["domain_key"].astype(str).str.replace(r"^https?://", "", regex=True).str.strip("/"),
+    )
+    rescue["wait_after_seconds"] = int(wait_after)
+    rescue["rescue_reason"] = rescue.apply(
+        lambda row: "; ".join(
+            item for item in [
+                f"crawl_status={row.get('crawl_status', '')}" if row.get("crawl_status") else "",
+                f"site_health={row.get('site_health_status', '')}" if row.get("site_health_status") else "",
+                f"reason={row.get('site_health_reason', '')}" if row.get("site_health_reason") else "",
+                f"error={row.get('error', '')}" if row.get("error") else "",
+                f"text_chars={row.get('site_text_chars', '')}" if str(row.get("site_text_chars", "")).strip() else "",
+            ] if item
+        ),
+        axis=1,
+    )
+    rescue["record_key"] = rescue["domain_key"].astype(str)
+    return rescue.sort_values("_rescue_score", ascending=False).head(int(limit or 100)).drop(columns=["_rescue_score"], errors="ignore")
+
+
+def build_maxun_crawl_rescue_records(candidates, wait_after=18):
+    records = []
+    for _, row in candidates.iterrows():
+        records.append(
+            {
+                "record_key": str(row.get("record_key") or row.get("domain_key") or ""),
+                "task": "maxun_rescue_failed_crawl",
+                "instruction": (
+                    "Open the page in a real browser, wait before extraction, then collect LLM-ready content. "
+                    "This is a second-pass rescue for pages where the fast crawler returned ERROR, BLOCKED or NO_SIGNAL."
+                ),
+                "url": row.get("url", ""),
+                "wait_after_seconds": int(row.get("wait_after_seconds") or wait_after or 18),
+                "preferred_pages": ["home", "oferta", "uslugi", "produkty", "o-nas", "kontakt"],
+                "context": {
+                    "domain_key": row.get("domain_key", ""),
+                    "company": row.get("company", ""),
+                    "account_owner": row.get("account_owner", ""),
+                    "crawl_status": row.get("crawl_status", ""),
+                    "site_health_status": row.get("site_health_status", ""),
+                    "site_health_reason": row.get("site_health_reason", ""),
+                    "http_status": row.get("http_status", ""),
+                    "error": row.get("error", ""),
+                    "current_title": row.get("title", ""),
+                    "current_meta_description": row.get("meta_description", ""),
+                    "reason": row.get("rescue_reason", ""),
+                },
+                "expected_output_schema": {
+                    "record_key": "string",
+                    "domain_key": "string",
+                    "url": "string",
+                    "maxun_status": "OK | EMPTY | BLOCKED | ERROR | NOT_FOUND",
+                    "maxun_pages_crawled": "number",
+                    "maxun_title": "string",
+                    "maxun_meta_description": "string",
+                    "maxun_markdown": "LLM-ready content after browser wait",
+                    "maxun_offer_terms": "short offer/service phrases separated by |",
+                    "maxun_evidence": "what changed vs fast crawler",
+                },
+            }
+        )
+    return records
+
+
+def save_maxun_crawl_rescue_batch(candidates, wait_after=18):
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    candidates.to_csv(MAXUN_RESCUE_CSV_PATH, index=False, encoding="utf-8-sig")
+    with pd.ExcelWriter(MAXUN_RESCUE_PATH, engine="openpyxl") as writer:
+        candidates.to_excel(writer, sheet_name="kandydaci_rescue", index=False)
+        pd.DataFrame(build_maxun_crawl_rescue_records(candidates, wait_after=wait_after)).to_excel(writer, sheet_name="jsonl_preview", index=False)
+    MAXUN_RESCUE_JSONL_PATH.write_bytes(jsonl_bytes(build_maxun_crawl_rescue_records(candidates, wait_after=wait_after)))
+    return MAXUN_RESCUE_PATH
 
 
 def build_maxun_experiment_records(candidates):

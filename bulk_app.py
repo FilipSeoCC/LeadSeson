@@ -639,11 +639,11 @@ def render_q4_pipeline_hero(df, source_label):
   <div class="hero-layout">
     <div class="hero-copy">
       <div class="kicker">LeadSeason pipeline</div>
-      <h2>Od pliku klientów do listy domen, do których warto uderzać przed Q4.</h2>
+      <h2>Od bazy klientów do listy firm gotowych na kontakt przed Q4.</h2>
       <p>
-        Wrzucasz bazę zgodną ze wzorem. Aplikacja crawluje strony, dokłada Google Places/GMB,
-        przygotowuje paczkę dla LLM do weryfikacji branż, mapuje grupy branżowe na sezonowość
-        i zwraca bazę operacyjną dla Customer Care.
+        Wgrywasz plik zgodny ze wzorem. LeadSeason sprawdza strony WWW, dokłada sygnały
+        Google Places/GMB, buduje paczkę do weryfikacji branż przez LLM i łączy wynik
+        z sezonowością. Na końcu dostajesz uporządkowaną bazę do działań Customer Care.
       </p>
       <div class="hero-stat-grid">
         <div class="hero-stat"><strong>{fmt_int(q4_df.shape[0])}</strong><span>rekordów z sezonowością Q4</span></div>

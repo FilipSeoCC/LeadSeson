@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from ai_classification import build_ai_batch, jsonl_bytes, merge_ai_results, read_ai_results
+from ai_classification import build_ai_batch, eligible_for_ai, jsonl_bytes, merge_ai_results, read_ai_results
 from bulk_crawler import DEFAULT_WORKERS, parse_input_records, run_bulk
 from seasonality_matrix import enrich_with_seasonality
 
@@ -2142,13 +2142,7 @@ def render_claude_view():
         return
 
     df = prepare_dashboard_frame(df)
-    eligible_mask = df.apply(lambda row: (
-                            str(row.get("detected_industry") or "").strip().lower() in ["", "brak danych"]
-                            or str(row.get("detected_industry") or "").strip().lower().startswith("nieokre"))
-                            and str(row.get("crawl_status") or "") == "OK"
-                            and str(row.get("site_health_status") or "OK") == "OK"
-                            and str(row.get("usable_for_llm", True)).lower() not in ["false", "0", "nie", "no"]
-                            and bool(str(row.get("body_text_sample") or row.get("title") or "").strip()), axis=1)
+    eligible_mask = df.apply(eligible_for_ai, axis=1)
     eligible_count = int(eligible_mask.sum())
     total = len(df)
     st.caption(f"Źródło: {source_label}")
@@ -2165,7 +2159,7 @@ def render_claude_view():
         st.markdown("### Paczka danych dla LLM")
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            only_unclassified = st.checkbox("Tylko Nieokreślona + crawl OK", value=True)
+            only_unclassified = st.checkbox("Tylko rekordy wymagające LLM", value=True)
         with col_b:
             start = st.number_input("Offset", min_value=0, value=0, step=100)
         with col_c:

@@ -66,16 +66,17 @@ def build_record_key(row):
 
 
 def eligible_for_ai(row):
-    industry = str(row.get("detected_industry") or "").strip()
-    industry_norm = industry.lower()
+    branch = str(row.get("branza_glowna") or "").strip()
+    branch_norm = branch.lower()
     crawl_status = str(row.get("crawl_status") or "").strip()
     usable_raw = row.get("usable_for_llm", True)
     usable = str(usable_raw).strip().lower() not in ["false", "0", "nie", "no"]
     site_health = str(row.get("site_health_status") or "OK").strip()
     body = str(row.get("body_text_sample") or "").strip()
     title = str(row.get("title") or "").strip()
-    unclassified = industry_norm in ["", "brak danych"] or industry_norm.startswith("nieokre")
-    return unclassified and crawl_status == "OK" and usable and site_health == "OK" and bool(body or title)
+    weak_branch = branch_norm in ["", "brak danych", "nieokreślona", "nieokreslona", "do weryfikacji", "-"]
+    needs_verification = weak_branch
+    return needs_verification and crawl_status == "OK" and usable and site_health == "OK" and bool(body or title)
 
 
 def build_ai_batch(df, only_unclassified=True, limit=100, start=0):

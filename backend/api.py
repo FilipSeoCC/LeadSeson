@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.data_service import (
@@ -44,6 +44,48 @@ app.add_middleware(
 )
 
 JOBS = {}
+
+
+LANDING_HTML = """
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LeadSeason API</title>
+  <style>
+    :root { color-scheme: dark; --bg:#070a11; --panel:#111827; --text:#fff7ed; --muted:#cbd5e1; --accent:#fb923c; --border:rgba(251,146,60,.34); }
+    body { margin:0; min-height:100vh; font-family:Inter,Segoe UI,Arial,sans-serif; background:radial-gradient(circle at 20% 0%, rgba(251,146,60,.16), transparent 32%), var(--bg); color:var(--text); display:grid; place-items:center; }
+    main { width:min(920px, calc(100vw - 32px)); border:1px solid var(--border); border-radius:14px; background:linear-gradient(135deg, rgba(17,24,39,.96), rgba(5,7,12,.94)); padding:28px; box-shadow:0 18px 50px rgba(0,0,0,.35); }
+    .kicker { color:var(--accent); text-transform:uppercase; letter-spacing:.08em; font-size:12px; font-weight:800; }
+    h1 { margin:8px 0 10px; font-size:32px; line-height:1.08; }
+    p { color:var(--muted); line-height:1.55; margin:0 0 18px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; margin-top:18px; }
+    a { color:var(--text); text-decoration:none; border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:14px; background:rgba(255,255,255,.04); display:block; }
+    a:hover { border-color:var(--accent); background:rgba(251,146,60,.10); }
+    strong { display:block; margin-bottom:4px; }
+    span { color:var(--muted); font-size:13px; }
+    .note { margin-top:18px; padding:12px 14px; border-left:3px solid var(--accent); background:rgba(251,146,60,.10); border-radius:8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="kicker">LeadSeason</div>
+    <h1>API działa. Pełny dashboard Streamlit działa lokalnie.</h1>
+    <p>Ten adres na Vercelu wystawia backend LeadSeason. Lokalna aplikacja operacyjna z dashboardem, Q4 i importem plików działa pod <strong>http://localhost:8510</strong>.</p>
+    <div class="grid">
+      <a href="/health"><strong>Status API</strong><span>Sprawdzenie działania backendu.</span></a>
+      <a href="/docs"><strong>Dokumentacja API</strong><span>OpenAPI / Swagger.</span></a>
+      <a href="/outputs"><strong>Pliki output</strong><span>Lista plików dostępnych na backendzie.</span></a>
+      <a href="/q4/summary"><strong>Q4 summary</strong><span>Podsumowanie kolejki Q4, jeśli output jest dostępny.</span></a>
+      <a href="/q4/actions"><strong>Q4 actions JSON</strong><span>Lista klientów/domen do działań.</span></a>
+      <a href="/q4/actions.xlsx"><strong>Q4 XLSX</strong><span>Pobranie pliku akcyjnego.</span></a>
+    </div>
+    <div class="note">Jeśli oczekujesz pełnego UI w przeglądarce publicznie, trzeba zrobić osobny frontend webowy albo hostować Streamlit na środowisku, które obsługuje długotrwały proces Python.</div>
+  </main>
+</body>
+</html>
+"""
 
 
 def _now_iso():
@@ -121,12 +163,21 @@ def _run_crawl_job(job_id, request):
         _save_job(job_id, job)
 
 
+@app.get("/", response_class=HTMLResponse)
+@app.get("/api", response_class=HTMLResponse)
+@app.get("/api/", response_class=HTMLResponse)
+def landing():
+    return LANDING_HTML
+
+
 @app.get("/health")
+@app.get("/api/health")
 def health():
     return {"status": "OK", "service": "LeadSeason API"}
 
 
 @app.get("/outputs")
+@app.get("/api/outputs")
 def outputs():
     return [
         {
@@ -140,6 +191,7 @@ def outputs():
 
 
 @app.get("/dashboard/summary")
+@app.get("/api/dashboard/summary")
 def get_dashboard_summary(file: str | None = Query(default=None)):
     try:
         path = safe_output_path(file) if file else None
@@ -151,6 +203,7 @@ def get_dashboard_summary(file: str | None = Query(default=None)):
 
 
 @app.get("/q4/summary")
+@app.get("/api/q4/summary")
 def get_q4_summary(file: str | None = Query(default=None)):
     try:
         path = safe_output_path(file) if file else None
@@ -162,6 +215,7 @@ def get_q4_summary(file: str | None = Query(default=None)):
 
 
 @app.get("/q4/actions")
+@app.get("/api/q4/actions")
 def get_q4_actions(
     file: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=5000),
@@ -177,6 +231,7 @@ def get_q4_actions(
 
 
 @app.get("/q4/actions.xlsx")
+@app.get("/api/q4/actions.xlsx")
 def download_q4_actions(file: str | None = Query(default=None)):
     try:
         path = safe_output_path(file) if file else None

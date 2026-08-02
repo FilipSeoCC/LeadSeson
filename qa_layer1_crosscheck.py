@@ -11,27 +11,10 @@ from pathlib import Path
 import pandas as pd
 
 from taxonomy import classify_detailed
+from stale_domain_detector import STALE_PATTERNS, detect_stale
 
 BASE_DIR = Path(__file__).resolve().parent
 CONSOLIDATED_PATH = BASE_DIR / "output" / "leadseason_pelna_baza_zeszyt2_consolidated.xlsx"
-
-STALE_PATTERNS = [
-    "domena jest zaparkowana", "domain is parked", "buy this domain", "domena na sprzedaż",
-    "oferta sprzedaży domeny", "cena domeny", "kup domenę", "domena do kupienia",
-    "aftermarket.pl", "this domain may be for sale", "sedo domain parking",
-    "strona nieaktywna", "strona w trakcie zmian", "under construction", "coming soon",
-    "w budowie", "domain suspended", "account suspended", "temporarily unavailable",
-]
-
-
-def detect_stale(row):
-    text = " ".join(
-        str(row.get(field, "") or "") for field in ["title", "meta_description", "body_text_sample"]
-    ).lower()
-    for pattern in STALE_PATTERNS:
-        if pattern in text:
-            return pattern
-    return ""
 
 
 def branza_family(value):

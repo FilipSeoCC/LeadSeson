@@ -1538,6 +1538,21 @@ def render_leads_view():
         width="stretch",
     )
 
+    from build_customer_care_export import build_customer_care_workbook
+
+    cc_sheets = build_customer_care_workbook(df)
+    cc_buffer = BytesIO()
+    with pd.ExcelWriter(cc_buffer, engine="openpyxl") as writer:
+        for name, frame in cc_sheets.items():
+            frame.to_excel(writer, sheet_name=name, index=False)
+    st.download_button(
+        "Pobierz bazę dla Customer Care (Do dzwonienia / Do weryfikacji / Podsumowanie)",
+        cc_buffer.getvalue(),
+        file_name="leadseason_customer_care_export.xlsx",
+        mime=OUTPUT_MIME_TYPES[".xlsx"],
+        width="stretch",
+    )
+
 
 def load_dataframe_from_file(uploaded_file):
     suffix = Path(uploaded_file.name).suffix.lower()

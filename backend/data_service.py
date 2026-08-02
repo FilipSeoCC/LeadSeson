@@ -245,3 +245,11 @@ def q4_summary(path=None):
         "tiers": frame["action_tier"].value_counts().to_dict() if "action_tier" in frame else {},
         "branches": branches,
     }
+
+
+def customer_care_export_frame(path=None):
+    df, _ = load_output(path)
+    if df.empty:
+        return {}
+    from build_customer_care_export import build_customer_care_workbook
+    return build_customer_care_workbook(df)

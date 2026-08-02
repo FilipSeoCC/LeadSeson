@@ -2,16 +2,36 @@
 import tempfile
 import subprocess
 import sys
-from datetime import date
+from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from ai_classification import build_ai_batch, eligible_for_ai, jsonl_bytes, merge_ai_results, read_ai_results
+from ai_classification import (
+    build_ai_batch,
+    build_places_reclass_batch,
+    eligible_for_ai,
+    jsonl_bytes,
+    merge_ai_results,
+    read_ai_results,
+)
 from bulk_crawler import DEFAULT_WORKERS, parse_input_records, run_bulk
 from seasonality_matrix import enrich_with_seasonality
+from seasonal_signal import (
+    MONTHS_PL,
+    MONTH_NAMES_PL,
+    QUARTER_OF_MONTH,
+    QUARTER_LABELS,
+    NIEOKRESLONA_VALUES,
+    SENUTO_MATRIX_PATH,
+    clean_number,
+    months_between,
+    load_senuto_matrix_frame,
+    build_seasonal_leads,
+    apply_senuto_q4_signal,
+)
 
 
 APP_NAME = "LeadSeason"
@@ -28,9 +48,9 @@ CATEGORY_REPORT_SCRIPT = BASE_DIR / "scripts" / "build_category_quality_report.p
 SENUTO_GROUPS_PATH = OUTPUT_DIR / "leadseason_grupy_branze_do_senuto.xlsx"
 SENUTO_GROUPS_CSV_PATH = OUTPUT_DIR / "leadseason_grupy_branze_do_senuto.csv"
 SENUTO_GROUPS_SCRIPT = BASE_DIR / "scripts" / "build_senuto_groups.py"
-SENUTO_MATRIX_PATH = OUTPUT_DIR / "leadseason_macierz_sezonowosci_senuto.xlsx"
 Q4_CONTACT_BASE_PATH = OUTPUT_DIR / "leadseason_q4_customer_care_do_kontaktu.xlsx"
 Q4_CONTACT_BASE_CSV_PATH = OUTPUT_DIR / "leadseason_q4_customer_care_do_kontaktu.csv"
+STATUS_DECISIONS_PATH = OUTPUT_DIR / "leadseason_status_realizacji.csv"
 MAXUN_EXPERIMENT_PATH = OUTPUT_DIR / "leadseason_maxun_experiment_candidates.xlsx"
 MAXUN_EXPERIMENT_CSV_PATH = OUTPUT_DIR / "leadseason_maxun_experiment_candidates.csv"
 MAXUN_EXPERIMENT_JSONL_PATH = OUTPUT_DIR / "leadseason_maxun_experiment_candidates.jsonl"
@@ -760,9 +780,10 @@ def render_q4_pipeline_hero(df, source_label):
       <div class="kicker">LeadSeason pipeline</div>
       <h2>Od bazy klientów do listy firm gotowych na kontakt przed Q4.</h2>
       <p>
-        Wgrywasz plik zgodny ze wzorem. LeadSeason sprawdza strony WWW, dokłada sygnały
-        Google Places/GMB, buduje paczkę do weryfikacji branż przez LLM i łączy wynik
-        z sezonowością. Na końcu dostajesz uporządkowaną bazę do działań Customer Care.
+        Wgrywasz plik z bazą klientów, a LeadSeason sprawdza strony WWW, dokłada dane o branży
+        z API Google Places/GMB, buduje paczkę do weryfikacji branż przez AI i łączy wynik
+        z sezonowością w branżach klientów. Na końcu dostajesz uporządkowaną bazę klientów
+        do działań leadowych w Customer Care.
       </p>
       <div class="hero-stat-grid">
         <div class="hero-stat"><strong>{fmt_int(q4_df.shape[0])}</strong><span>rekordów z sezonowością Q4</span></div>
@@ -787,6 +808,51 @@ def render_q4_pipeline_hero(df, source_label):
         unsafe_allow_html=True,
     )
     st.caption(f"Aktywne źródło danych: {source_label}. Użyteczne strony dla LLM: {usable_pct}.")
+
+
+BASKET_TIER_ORDER = ["VIP", "Standard", "Basic", "ECOM", "Reaktywna", "Inne"]
+
+
+def simplify_basket_tier(value):
+    text = str(value or "").lower()
+    if "vip" in text:
+        return "VIP"
+    if "ecom" in text:
+        return "ECOM"
+    if "reaktywna" in text:
+        return "Reaktywna"
+    if "basic" in text:
+        return "Basic"
+    if "standard" in text:
+        return "Standard"
+    return "Inne"
+
+
+def render_q4_basket_chart():
+    df, _ = auto_pick_dataset()
+    matrix = load_senuto_matrix_frame()
+    if df.empty or matrix.empty:
+        return
+    df, _ = enrich_with_category_report(df)
+    leads = aggregate_leads_by_client(build_seasonal_leads(df, matrix))
+    if leads.empty or "seo_basket" not in leads.columns:
+        return
+    q4_leads = leads[leads["kwartaly_szczytu"].astype(str).str.contains("Q4", na=False)]
+    if q4_leads.empty:
+        st.info("Brak klientów z sezonowością Q4 w aktywnej bazie.")
+        return
+    q4_leads = q4_leads.copy()
+    q4_leads["linia_obslugowa"] = q4_leads["seo_basket"].map(simplify_basket_tier)
+    tier_counts = q4_leads["linia_obslugowa"].value_counts().reindex(BASKET_TIER_ORDER).dropna().astype(int)
+
+    st.markdown("#### Klienci z sezonowością Q4 wg linii obsługowej")
+    st.bar_chart(tier_counts)
+    st.dataframe(
+        tier_counts.rename("liczba_klientow").reset_index().rename(columns={"index": "linia_obslugowa"}),
+        hide_index=True,
+        width="stretch",
+        column_config={"liczba_klientow": st.column_config.NumberColumn("Klienci", format="%d")},
+    )
 
 
 def render_overview_tab():
@@ -832,18 +898,18 @@ def render_overview_tab():
     else:
         st.caption("Aktywna baza: automatyczny wybór najnowszego pliku z 'pełna' w nazwie.")
 
-    metrics, category_data = load_category_report_frames()
     senuto_data = load_senuto_groups_frame()
     senuto_matrix = load_senuto_matrix_frame()
     active_df, _ = auto_pick_dataset()
+    active_enriched, _ = enrich_with_category_report(active_df) if not active_df.empty else (active_df, 0)
     active_df = prepare_dashboard_frame(active_df) if not active_df.empty else active_df
-    category_metrics, _, _, _ = build_category_metrics(category_data)
-    season_metrics, _, _, _ = build_seasonality_metrics(senuto_matrix, category_data)
+    category_metrics, _, _, _ = build_category_metrics(active_enriched)
+    season_metrics, _, _, _ = build_seasonality_metrics(senuto_matrix, active_enriched)
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Jakość kategoryzacji", "gotowe" if not category_data.empty else "brak")
-    c2.metric("Domeny w badaniu", category_data["domain_key"].nunique() if not category_data.empty and "domain_key" in category_data else 0)
-    c3.metric("Pokrycie AI", f"{metric_value(metrics, 'pokrycie_ai_pct')}%" if not metrics.empty else "0%")
+    c1.metric("Klasyfikacja branż", "gotowe" if category_metrics.get("ai_domains", 0) >= category_metrics.get("domains", 0) else "w toku")
+    c2.metric("Domeny w bazie", category_metrics.get("domains", 0))
+    c3.metric("Pokrycie AI", pct(category_metrics.get("ai_domains", 0), category_metrics.get("domains", 0)))
     c4.metric("Grupy do Senuto", len(senuto_data) if not senuto_data.empty else 0)
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("AI + Places", category_metrics.get("ai_places_domains", 0), pct(category_metrics.get("ai_places_domains", 0), category_metrics.get("domains", 0)))
@@ -852,7 +918,7 @@ def render_overview_tab():
     c8.metric("Domeny z Q4", season_metrics.get("q4_domains", 0))
 
     st.markdown("### Status procesu")
-    pipeline = pd.DataFrame(build_pipeline_status(active_df, category_data, senuto_data, senuto_matrix))
+    pipeline = pd.DataFrame(build_pipeline_status(active_df, active_enriched, senuto_data, senuto_matrix))
     st.dataframe(
         pipeline,
         width="stretch",
@@ -903,173 +969,17 @@ def render_overview_tab():
             st.download_button("Pobierz aktualny raport branż", CATEGORY_REPORT_PATH.read_bytes(), file_name=CATEGORY_REPORT_PATH.name, mime=OUTPUT_MIME_TYPES[".xlsx"], width="stretch")
 
 
-MONTHS_PL = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paz", "lis", "gru"]
-MONTH_NAMES_PL = {
-    "sty": "styczeń", "lut": "luty", "mar": "marzec", "kwi": "kwiecień", "maj": "maj", "cze": "czerwiec",
-    "lip": "lipiec", "sie": "sierpień", "wrz": "wrzesień", "paz": "październik", "lis": "listopad", "gru": "grudzień",
-}
-QUARTER_OF_MONTH = {
-    "sty": "Q1", "lut": "Q1", "mar": "Q1", "kwi": "Q2", "maj": "Q2", "cze": "Q2",
-    "lip": "Q3", "sie": "Q3", "wrz": "Q3", "paz": "Q4", "lis": "Q4", "gru": "Q4",
-}
-QUARTER_LABELS = {
-    "Q1": "Q1 (sty-mar)", "Q2": "Q2 (kwi-cze)", "Q3": "Q3 (lip-wrz)", "Q4": "Q4 (paź-gru)",
-}
-
-
-def months_between(today, target):
-    return (target.year - today.year) * 12 + (target.month - today.month)
-
-
-NIEOKRESLONA_VALUES = {"", "nieokreślona", "brak danych"}
-
-
-def build_seasonal_leads(df, matrix, today=None):
-    if df.empty or matrix.empty:
-        return pd.DataFrame()
-    has_ai = "ai_branza_glowna" in df.columns and "ai_podbranza" in df.columns
-    has_rule = "branza_glowna" in df.columns and "podbranza" in df.columns
-    if not has_ai and not has_rule:
-        return pd.DataFrame()
-
-    matrix_by_key = {}
-    for _, row in matrix.iterrows():
-        key = (str(row.get("branza_glowna") or "").strip(), str(row.get("podbranza") or "").strip())
-        matrix_by_key[key] = row
-
-    today = today or date.today()
-    current_idx = today.month - 1
-    optional_cols = {
-        "id": "id",
-        "detail_id": "detail_id",
-        "nip": "nip",
-        "account_owner": "account_owner",
-        "company": "company",
-        "service": "service",
-        "seo_basket": "seo_basket",
-        "access_type": "access_type",
-        "start_date": "start_date",
-        "end_date": "end_date",
-        "monthly_value": "monthly_value",
-    }
-    present = {label: col for label, col in optional_cols.items() if col in df.columns}
-
-    end_dates = pd.to_datetime(df[present["end_date"]], errors="coerce") if "end_date" in present else None
-    start_dates = pd.to_datetime(df[present["start_date"]], errors="coerce") if "start_date" in present else None
-    mrr_series = df[present["monthly_value"]].map(clean_number) if "monthly_value" in present else None
-
-    rows = []
-    for pos, (_, row) in enumerate(df.iterrows()):
-        ai_branza = str(row.get("ai_branza_glowna") or "").strip() if has_ai else ""
-        if has_ai and ai_branza.lower() not in NIEOKRESLONA_VALUES:
-            branza = ai_branza
-            podbranza = str(row.get("ai_podbranza") or "").strip()
-            branza_zrodlo = "LLM (zweryfikowane)"
-            try:
-                branza_confidence = int(float(row.get("ai_confidence") or 0))
-            except (TypeError, ValueError):
-                branza_confidence = 0
-        elif has_rule and str(row.get("branza_glowna") or "").strip():
-            branza = str(row.get("branza_glowna") or "").strip()
-            podbranza = str(row.get("podbranza") or "").strip()
-            branza_zrodlo = "Klasyfikator regułowy"
-            try:
-                branza_confidence = int(float(row.get("classification_confidence") or 0))
-            except (TypeError, ValueError):
-                branza_confidence = 0
-        else:
-            branza, podbranza, branza_zrodlo, branza_confidence = "Nieokreślona", "Nieokreślona", "Brak", 0
-        key = (branza, podbranza)
-
-        match = matrix_by_key.get(key)
-        item = {label: (row.get(col) or "") for label, col in present.items() if label not in ("start_date", "end_date", "monthly_value")}
-        item["domain_key"] = row.get("domain_key", "")
-        item["branza_glowna"] = branza or "Nieokreślona"
-        item["podbranza"] = podbranza or "Nieokreślona"
-        item["branza_zrodlo"] = branza_zrodlo
-        item["branza_confidence"] = branza_confidence
-        item["mrr"] = float(mrr_series.iloc[pos]) if mrr_series is not None and pd.notna(mrr_series.iloc[pos]) else 0.0
-
-        if end_dates is not None and pd.notna(end_dates.iloc[pos]):
-            end_dt = end_dates.iloc[pos].date()
-            item["end_date"] = end_dt.isoformat()
-            item["miesiecy_do_konca_umowy"] = months_between(today, end_dt)
-        else:
-            item["end_date"] = ""
-            item["miesiecy_do_konca_umowy"] = None
-        if start_dates is not None and pd.notna(start_dates.iloc[pos]):
-            item["start_date"] = start_dates.iloc[pos].date().isoformat()
-        else:
-            item["start_date"] = ""
-
-        peak_months = []
-        if match is not None and str(match.get("status", "")) == "OK":
-            peak_raw = str(match.get("sezon_peak_miesiace") or "")
-            peak_months = [m.strip() for m in peak_raw.split(",") if m.strip() in MONTHS_PL]
-
-        if not peak_months:
-            item.update({
-                "sezon_peak_miesiace": "",
-                "miesiecy_do_szczytu": 99,
-                "okno_kontaktu": "Brak danych sezonowości",
-                "czy_sezonowosc_wyrazna": "",
-                "confidence_sezonowosci": 0,
-                "kwartaly_szczytu": "",
-            })
-        else:
-            peak_indices = [MONTHS_PL.index(m) for m in peak_months]
-            dist = min((idx - current_idx) % 12 for idx in peak_indices)
-            okno = "Szczyt teraz" if dist == 0 else ("Szczyt za miesiąc" if dist == 1 else f"Szczyt za {dist} mies.")
-            wyrazna = str(match.get("czy_sezonowosc_wyrazna") or "")
-            try:
-                conf = int(float(match.get("confidence_sezonowosci") or 0))
-            except ValueError:
-                conf = 0
-            kwartaly = sorted({QUARTER_OF_MONTH[m] for m in peak_months})
-            item.update({
-                "sezon_peak_miesiace": ", ".join(MONTH_NAMES_PL.get(m, m) for m in peak_months),
-                "miesiecy_do_szczytu": dist,
-                "okno_kontaktu": okno,
-                "czy_sezonowosc_wyrazna": wyrazna,
-                "confidence_sezonowosci": conf,
-                "kwartaly_szczytu": ", ".join(kwartaly),
-            })
-
-        renewal_close = item["miesiecy_do_konca_umowy"] is not None and 0 <= item["miesiecy_do_konca_umowy"] <= 3
-        season_close = item["miesiecy_do_szczytu"] <= 1
-        season_ok = item["okno_kontaktu"] != "Brak danych sezonowości"
-        if season_ok and season_close and renewal_close:
-            item["priorytet_kontaktu"] = "Wysoki: sezon + koniec umowy"
-            item["sugerowana_akcja"] = "Zadzwoń teraz — sezonowy szczyt i koniec umowy się pokrywają, dobry moment na odnowienie + upsell."
-        elif season_ok and season_close:
-            item["priorytet_kontaktu"] = "Sezonowy"
-            item["sugerowana_akcja"] = "Zadzwoń teraz — branża wchodzi w sezonowy szczyt, zaproponuj dodatkową usługę."
-        elif renewal_close:
-            item["priorytet_kontaktu"] = "Odnowienie umowy"
-            item["sugerowana_akcja"] = "Umowa kończy się niebawem — zaplanuj kontakt odnowieniowy."
-        elif season_ok and item["czy_sezonowosc_wyrazna"] == "tak":
-            item["priorytet_kontaktu"] = "Sezonowy (later)"
-            item["sugerowana_akcja"] = "Zaplanuj kontakt przed nadchodzącym szczytem."
-        elif not season_ok:
-            item["priorytet_kontaktu"] = "Brak danych"
-            item["sugerowana_akcja"] = "Brak dopasowania do sprawdzonej grupy Senuto — zweryfikuj ręcznie."
-        else:
-            item["priorytet_kontaktu"] = "Standardowy"
-            item["sugerowana_akcja"] = "Słaby sygnał sezonowości — niski priorytet kontaktu."
-
-        rows.append(item)
-
-    result = pd.DataFrame(rows)
-    return result.sort_values(["miesiecy_do_szczytu", "confidence_sezonowosci"], ascending=[True, False]).reset_index(drop=True)
-
-
-def build_q4_customer_care_base_from_leads(leads, source_df=None, matched_from_report=0):
+def build_q4_customer_care_base_from_leads(leads, source_df=None, matched_from_report=0, today=None):
     if leads.empty:
         return pd.DataFrame(), {"matched_from_report": matched_from_report}
 
+    today = today or date.today()
+    h2_start = pd.Timestamp(year=today.year, month=7, day=1)
+    h2_end = pd.Timestamp(year=today.year, month=12, day=31)
+
     q4 = leads[leads["kwartaly_szczytu"].astype(str).str.contains("Q4", na=False)].copy()
     q4["end_dt"] = pd.to_datetime(q4.get("end_date", ""), errors="coerce")
-    excluded_contract = q4["end_dt"].between(pd.Timestamp("2026-07-01"), pd.Timestamp("2026-12-31"), inclusive="both")
+    excluded_contract = q4["end_dt"].between(h2_start, h2_end, inclusive="both")
     ready = q4[~excluded_contract].copy()
     excluded = q4[excluded_contract].copy()
 
@@ -1104,16 +1014,10 @@ def build_q4_customer_care_base_from_leads(leads, source_df=None, matched_from_r
         "mrr_do_kontaktu": float(ready["mrr"].sum()) if "mrr" in ready else 0,
         "matched_from_category_report": matched_from_report,
         "zadluzenie_status": "Nie odfiltrowano - brak kolumny zadłużenia w pliku źródłowym.",
+        "wykluczenie_okno_start": h2_start.date().isoformat(),
+        "wykluczenie_okno_end": h2_end.date().isoformat(),
     }
     return ready, metrics
-
-
-def build_q4_customer_care_base(df, matrix, today=None):
-    if df.empty or matrix.empty:
-        return pd.DataFrame(), {}
-    enriched_df, matched_from_report = enrich_with_category_report(df)
-    leads = add_lead_readiness(build_seasonal_leads(enriched_df, matrix, today=today))
-    return build_q4_customer_care_base_from_leads(leads, source_df=df, matched_from_report=matched_from_report)
 
 
 def build_action_plan(df, action_type, target_limit=100):
@@ -1220,14 +1124,20 @@ def build_pipeline_status(df, category_data, senuto_groups, senuto_matrix):
     crawl_ok = int(df["crawl_status"].eq("OK").sum()) if total and "crawl_status" in df else 0
     usable_pages = int(df["usable_for_llm"].astype(str).str.lower().isin(["true", "1", "tak", "yes"]).sum()) if total and "usable_for_llm" in df else crawl_ok
     places_ok = int(df["places_status"].eq("OK").sum()) if total and "places_status" in df else 0
-    category_domains = category_data["domain_key"].nunique() if not category_data.empty and "domain_key" in category_data else 0
+    if not category_data.empty and "ai_branza_glowna" in category_data.columns and "domain_key" in category_data.columns:
+        classified = category_data[category_data["ai_branza_glowna"].astype(str).str.strip().str.lower().isin(NIEOKRESLONA_VALUES).eq(False)]
+        category_domains = classified["domain_key"].nunique()
+        category_total_domains = category_data["domain_key"].nunique()
+    else:
+        category_domains = 0
+        category_total_domains = 0
     senuto_ok = int(senuto_matrix["status"].eq("OK").sum()) if not senuto_matrix.empty and "status" in senuto_matrix else 0
 
     return [
         {"etap": "Baza klientów", "status": "gotowe" if total else "brak", "metryka": f"{total} rekordów / {domains} domen"},
         {"etap": "Crawl WWW", "status": "gotowe" if crawl_ok else "wymaga akcji", "metryka": f"{crawl_ok} stron OK / {usable_pages} użytecznych dla LLM"},
         {"etap": "Google Places/GMB", "status": "gotowe" if places_ok else "opcjonalne", "metryka": f"{places_ok} dopasowań"},
-        {"etap": "Klasyfikacja branż LLM", "status": "gotowe" if category_domains else "wymaga akcji", "metryka": f"{category_domains} domen z raportem"},
+        {"etap": "Klasyfikacja branż LLM", "status": "gotowe" if category_domains >= category_total_domains and category_total_domains else "w toku", "metryka": f"{category_domains}/{category_total_domains} domen z branżą AI"},
         {"etap": "Grupy do Senuto", "status": "gotowe" if not senuto_groups.empty else "wymaga akcji", "metryka": f"{len(senuto_groups)} grup"},
         {"etap": "Macierz sezonowości", "status": "gotowe" if senuto_ok else "wymaga akcji", "metryka": f"{senuto_ok} grup OK"},
     ]
@@ -1295,6 +1205,60 @@ def auto_pick_dataset():
     return load_output_path(default_file, default_file.stat().st_mtime), default_file.name
 
 
+def load_status_decisions():
+    if STATUS_DECISIONS_PATH.exists():
+        return pd.read_csv(STATUS_DECISIONS_PATH, dtype=str, keep_default_na=False)
+    return pd.DataFrame(columns=["klucz_decyzji", "status_realizacji", "zaktualizowano"])
+
+
+def save_status_decisions(df):
+    STATUS_DECISIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(STATUS_DECISIONS_PATH, index=False, encoding="utf-8-sig")
+
+
+def _join_unique_values(series):
+    seen = []
+    for value in series:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.append(text)
+    return " | ".join(seen)
+
+
+def aggregate_leads_by_client(leads):
+    # One client (id) can have several contract/service-line rows (different detail_id,
+    # service, seo_basket) that all point at the same company/domain. For leads we care
+    # about one unique client per contact, with MRR summed across all their contracts -
+    # not one lead row per contract line, which silently inflates client/domain counts.
+    if leads.empty:
+        return leads
+    data = leads.copy()
+    id_key = data["id"].astype(str).str.strip() if "id" in data else pd.Series("", index=data.index)
+    domain_key = data["domain_key"].astype(str).str.strip() if "domain_key" in data else pd.Series("", index=data.index)
+    data["_client_key"] = id_key.where(id_key.ne(""), domain_key)
+    data = data[data["_client_key"].ne("")]
+    if data.empty:
+        return data.drop(columns=["_client_key"], errors="ignore")
+
+    agg_map = {}
+    if "mrr" in data.columns:
+        agg_map["mrr"] = "sum"
+    for col in ["confidence_sezonowosci", "branza_confidence"]:
+        if col in data.columns:
+            agg_map[col] = "max"
+    for col in ["service", "seo_basket", "detail_id"]:
+        if col in data.columns:
+            agg_map[col] = _join_unique_values
+    for col in data.columns:
+        if col not in agg_map and col != "_client_key":
+            agg_map[col] = "first"
+
+    counts = data.groupby("_client_key").size()
+    grouped = data.groupby("_client_key", as_index=False).agg(agg_map)
+    grouped["liczba_umow_klienta"] = grouped["_client_key"].map(counts).values
+    return grouped.drop(columns=["_client_key"], errors="ignore")
+
+
 def render_leads_view():
     render_header("Plan działania: wybierz cel operacyjny, zawęź segment i pobierz kolejkę pracy dla opiekunów.")
 
@@ -1310,7 +1274,7 @@ def render_leads_view():
 
     df, matched_from_report = enrich_with_category_report(df)
 
-    leads = add_lead_readiness(build_seasonal_leads(df, matrix))
+    leads = add_lead_readiness(aggregate_leads_by_client(build_seasonal_leads(df, matrix)))
     if leads.empty:
         st.warning(
             "Ta baza nie ma jeszcze kolumn branży (`ai_branza_glowna`/`ai_podbranza` albo `branza_glowna`/`podbranza`). "
@@ -1333,7 +1297,8 @@ def render_leads_view():
   <h3>Baza Q4 dla Customer Care jest gotowa do pracy</h3>
   <p>
     Reguła: bierzemy klientów z potwierdzonym pikiem sezonowości w Q4 i odcinamy umowy kończące się
-    od 2026-07-01 do 2026-12-31. Zadłużenia nie odcinamy, bo w aktualnym pliku nie ma takiej kolumny.
+    od {q4_metrics.get("wykluczenie_okno_start", "")} do {q4_metrics.get("wykluczenie_okno_end", "")}.
+    Zadłużenia nie odcinamy, bo w aktualnym pliku nie ma takiej kolumny.
   </p>
   <div class="decision-grid">
     <div class="decision-item"><strong>{fmt_int(q4_metrics.get("do_kontaktu_klienci", 0))}</strong><span>klientów do kontaktu</span></div>
@@ -1341,7 +1306,7 @@ def render_leads_view():
     <div class="decision-item"><strong>{fmt_int(q4_metrics.get("wykluczone_umowy_lip_gru_2026", 0))}</strong><span>rekordów wykluczonych przez koniec umowy</span></div>
     <div class="decision-item"><strong>{q4_mrr_label}</strong><span>MRR w kolejce Q4</span></div>
   </div>
-  <div class="decision-note">Źródło: pełna baza 4266 rekordów + macierz sezonowości Senuto</div>
+  <div class="decision-note">Źródło: pełna baza {fmt_int(q4_metrics.get("rekordy_baza", 0))} rekordów + macierz sezonowości Senuto</div>
 </div>
 """,
             unsafe_allow_html=True,
@@ -1349,7 +1314,7 @@ def render_leads_view():
         preview_cols = [
             "ranking_q4", "id", "account_owner", "company", "domain_key",
             "branza_glowna", "sezon_peak_miesiace", "confidence_sezonowosci",
-            "score_gotowosci", "mrr",
+            "score_gotowosci", "mrr", "liczba_umow_klienta",
         ]
         summary_df = pd.DataFrame([{"metryka": key, "wartosc": value} for key, value in q4_metrics.items()])
         q4_preview = q4_ready.copy()
@@ -1372,6 +1337,7 @@ def render_leads_view():
                     "confidence_sezonowosci": "Pewność",
                     "score_gotowosci": "Score",
                     "mrr": "MRR",
+                    "liczba_umow_klienta": "Ile umów",
                 },
                 limit=14,
             )
@@ -1487,6 +1453,15 @@ def render_leads_view():
         filtered = filtered[filtered["miesiecy_do_konca_umowy"].fillna(999) <= renewal_window]
 
     action_plan = build_action_plan(filtered, action_type, target_limit)
+    saved_decisions = load_status_decisions()
+    if not action_plan.empty:
+        id_col = action_plan["id"].astype(str) if "id" in action_plan else ""
+        domain_col = action_plan["domain_key"].astype(str) if "domain_key" in action_plan else ""
+        action_plan["klucz_decyzji"] = id_col + "|" + domain_col
+        if not saved_decisions.empty:
+            decision_map = dict(zip(saved_decisions["klucz_decyzji"], saved_decisions["status_realizacji"]))
+            action_plan["status_realizacji"] = action_plan["klucz_decyzji"].map(decision_map).fillna(action_plan["status_realizacji"])
+
     p1, p2, p3, p4 = st.columns(4)
     p1.metric("Rekordy w segmencie", len(filtered))
     p2.metric("Do planu", len(action_plan))
@@ -1499,7 +1474,7 @@ def render_leads_view():
             col for col in [
                 "ranking", "status_realizacji", "owner_planu", "score_gotowosci", "jakosc_rekordu",
                 "company", "domain_key", "branza_glowna", "podbranza", "plan_dzialania", "okno_kontaktu",
-                "sezon_peak_miesiace", "confidence_sezonowosci", "mrr", "end_date",
+                "sezon_peak_miesiace", "confidence_sezonowosci", "mrr", "liczba_umow_klienta", "end_date",
                 "miesiecy_do_konca_umowy", "service", "seo_basket", "powod_wyboru",
             ] if col in action_plan.columns
         ]
@@ -1509,12 +1484,13 @@ def render_leads_view():
             "score_gotowosci": st.column_config.ProgressColumn("Gotowość", min_value=0, max_value=100, format="%d"),
             "confidence_sezonowosci": st.column_config.NumberColumn("Pewność sezonu", format="%d"),
             "miesiecy_do_konca_umowy": st.column_config.NumberColumn("Mies. do końca umowy"),
+            "liczba_umow_klienta": st.column_config.NumberColumn("Ile umów", format="%d"),
             "status_realizacji": st.column_config.SelectboxColumn(
                 "Status",
                 options=["Do zaplanowania", "W trakcie", "Zrobione", "Odłożone", "Do weryfikacji"],
             ),
         }
-        st.data_editor(
+        edited_plan = st.data_editor(
             action_plan[display_cols],
             width="stretch",
             height=520,
@@ -1523,6 +1499,16 @@ def render_leads_view():
             disabled=[col for col in display_cols if col != "status_realizacji"],
             key=f"action_plan_editor_{action_goal}",
         )
+        if not action_plan.empty and st.button("Zapisz statusy realizacji", key=f"save_status_{action_goal}"):
+            to_save = pd.DataFrame({
+                "klucz_decyzji": action_plan["klucz_decyzji"].values,
+                "status_realizacji": edited_plan["status_realizacji"].values,
+            })
+            to_save["zaktualizowano"] = datetime.now().isoformat()
+            merged_decisions = pd.concat([saved_decisions, to_save], ignore_index=True)
+            merged_decisions = merged_decisions.drop_duplicates("klucz_decyzji", keep="last")
+            save_status_decisions(merged_decisions)
+            st.success(f"Zapisano {len(to_save)} statusów realizacji.")
 
     st.markdown("### Podsumowanie segmentu")
     group_options = [col for col in ["branza_glowna", "segment_operacyjny", "okno_kontaktu", "priorytet_kontaktu", "account_owner", "service", "seo_basket"] if col in filtered.columns]
@@ -1551,15 +1537,6 @@ def render_leads_view():
         mime=OUTPUT_MIME_TYPES[".xlsx"],
         width="stretch",
     )
-
-
-def clean_number(value):
-    text = str(value or "").strip().replace("\xa0", "").replace(" ", "")
-    text = text.replace(",", ".")
-    try:
-        return float(text)
-    except ValueError:
-        return 0.0
 
 
 def load_dataframe_from_file(uploaded_file):
@@ -1660,8 +1637,30 @@ def ensure_operational_columns(df):
     return pd.DataFrame(rows)
 
 
+def resolve_effective_branza(df):
+    # detected_industry comes from the first-generation keyword rule engine and is
+    # frequently "Nieokreślona" even when the newer pipeline (AI/LLM classification,
+    # then the richer rule-based classify_detailed) already resolved a real branża for
+    # that row. Charts/metrics/filters should read this resolved value, not the stale one.
+    def pick(row):
+        ai_val = str(row.get("ai_branza_glowna") or "").strip()
+        if ai_val and ai_val.lower() not in NIEOKRESLONA_VALUES:
+            return ai_val
+        rule_val = str(row.get("branza_glowna") or "").strip()
+        if rule_val and rule_val.lower() not in NIEOKRESLONA_VALUES:
+            return rule_val
+        legacy_val = str(row.get("detected_industry") or "").strip()
+        if legacy_val and legacy_val.lower() not in NIEOKRESLONA_VALUES:
+            return legacy_val
+        return "Nieokreślona"
+
+    return df.apply(pick, axis=1)
+
+
 def prepare_dashboard_frame(df):
     df = ensure_operational_columns(df.copy())
+    if "ai_branza_glowna" in df.columns or "branza_glowna" in df.columns:
+        df["detected_industry"] = resolve_effective_branza(df)
     if "monthly_value" in df:
         df["_mrr_num"] = df["monthly_value"].map(clean_number)
     elif "mrr" in df:
@@ -1905,7 +1904,9 @@ def render_dashboard_view():
 
     df, matched_from_report = enrich_with_category_report(df)
     df = prepare_dashboard_frame(df)
+    df = apply_senuto_q4_signal(df)
     render_q4_pipeline_hero(df, source_label)
+    render_q4_basket_chart()
     with st.expander("Źródło danych i konfiguracja dashboardu", expanded=False):
         configured_df, configured_label = get_dashboard_source_frame("dashboard")
         if not configured_df.empty and configured_label != source_label:
@@ -2134,6 +2135,13 @@ def render_dashboard_view():
         )
 
 
+def resolve_export_records(df, mode, limit, start):
+    if mode == "places_first":
+        return build_places_reclass_batch(df, limit=int(limit), start=int(start))
+    only_unclassified = mode == "unclassified"
+    return build_ai_batch(df, only_unclassified=only_unclassified, limit=int(limit), start=int(start))
+
+
 def render_claude_view():
     st.caption("Klasyfikacja branż: eksport danych po crawlu, import klasyfikacji LLM i kontrola rekordów niepewnych.")
     df, source_label = resolve_dashboard_source_frame("claude")
@@ -2164,13 +2172,21 @@ def render_claude_view():
         st.markdown("### Paczka danych dla LLM")
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            only_unclassified = st.checkbox("Tylko rekordy wymagające LLM", value=True)
+            mode = st.radio(
+                "Tryb",
+                options=["unclassified", "places_first", "all"],
+                format_func=lambda m: {
+                    "unclassified": "Tylko nieklasyfikowane",
+                    "places_first": "Places-first reklasyfikacja (nadpisz istniejące)",
+                    "all": "Wszystkie rekordy",
+                }[m],
+            )
         with col_b:
             start = st.number_input("Offset", min_value=0, value=0, step=100)
         with col_c:
             limit = st.number_input("Limit batcha", min_value=1, max_value=1000, value=100, step=50)
 
-        records = build_ai_batch(df, only_unclassified=only_unclassified, limit=int(limit), start=int(start))
+        records = resolve_export_records(df, mode, limit, start)
         st.metric("Rekordy w paczce", len(records))
         if records:
             preview = pd.DataFrame([{"record_key": item["record_key"], **item["context"]} for item in records[:20]])
@@ -2178,7 +2194,7 @@ def render_claude_view():
             st.download_button(
                 "Pobierz JSONL dla LLM",
                 jsonl_bytes(records),
-                file_name=f"leadseason_claude_batch_{int(start)}_{int(limit)}.jsonl",
+                file_name=f"leadseason_claude_batch_{mode}_{int(start)}_{int(limit)}.jsonl",
                 mime="application/jsonl",
                 width="stretch",
             )
@@ -2419,13 +2435,6 @@ def load_senuto_groups_frame():
     workbook = pd.ExcelFile(SENUTO_GROUPS_PATH)
     sheet = "grupy_do_senuto" if "grupy_do_senuto" in workbook.sheet_names else workbook.sheet_names[0]
     return pd.read_excel(workbook, sheet_name=sheet, dtype=str, keep_default_na=False)
-
-
-@st.cache_data(show_spinner=False, ttl=600)
-def load_senuto_matrix_frame():
-    if not SENUTO_MATRIX_PATH.exists():
-        return pd.DataFrame()
-    return pd.read_excel(SENUTO_MATRIX_PATH, dtype=str, keep_default_na=False)
 
 
 SENUTO_MATRIX_COLUMNS = [
@@ -3018,14 +3027,15 @@ def render_category_view():
         st.markdown(
             """
 <div class="hint">
-Tu oceniasz jakość branż po procesie enrichment + LLM. Google Places/GMB jest drugim sygnałem,
-a stare reguły są tylko punktem porównania.
+Tu oceniasz jakość branż na AKTUALNEJ, aktywnej bazie (tej samej co Dashboard/Plan działania) -
+nie na zamrożonej próbce 500 domen z pierwszego etapu projektu. Google Places/GMB jest drugim
+sygnałem, a stare reguły są tylko punktem porównania.
 </div>
 """,
             unsafe_allow_html=True,
         )
     with right:
-        if st.button("Odśwież raport 500 domen", width="stretch", disabled=not CATEGORY_REPORT_SCRIPT.exists()):
+        if st.button("Przelicz historyczną próbkę 500 domen", width="stretch", disabled=not CATEGORY_REPORT_SCRIPT.exists()):
             try:
                 result = subprocess.run(
                     [sys.executable, str(CATEGORY_REPORT_SCRIPT)],
@@ -3035,16 +3045,20 @@ a stare reguły są tylko punktem porównania.
                     timeout=120,
                 )
                 if result.returncode == 0:
-                    st.success("Raport kategoryzacji został przeliczony.")
+                    st.success("Raport próbki 500 domen został przeliczony (nie wpływa na widok poniżej - ten liczy się z aktywnej bazy).")
                 else:
                     st.error(result.stderr or result.stdout or "Nie udało się przeliczyć raportu.")
             except Exception as exc:
                 st.error(str(exc))
 
-    metrics, data = load_category_report_frames()
-    if data.empty:
-        st.info("Nie ma jeszcze raportu. Uruchom skrypt `scripts/build_category_quality_report.py` albo odśwież raport po wygenerowaniu plików Claude/Places.")
+    active_df, active_label = auto_pick_dataset()
+    if active_df.empty:
+        st.info("Brak aktywnej bazy. Wybierz ją w widoku Zasilenie danych → Status procesu.")
         return
+    data, matched_from_report = enrich_with_category_report(active_df)
+    st.caption(f"Źródło: {active_label} · {len(data):,} rekordów".replace(",", " "))
+    if matched_from_report:
+        st.caption(f"Branża/Places dociągnięte z historycznej próbki dla {matched_from_report:,} rekordów.".replace(",", " "))
 
     category_metrics, branch_quality, quality_table, model_table = build_category_metrics(data)
     data_display = data.copy()
@@ -3053,12 +3067,13 @@ a stare reguły są tylko punktem porównania.
     if "category_quality_bucket" in data_display:
         data_display["category_quality_bucket_pl"] = data_display["category_quality_bucket"].map(CATEGORY_BUCKET_PL).fillna(data_display["category_quality_bucket"])
     domains_count = data["domain_key"].nunique() if "domain_key" in data else len(data)
+    review_count = category_metrics.get("review_domains", 0)
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Rekordy CRM", metric_value(metrics, "rekordy_w_probce", str(len(data))))
-    c2.metric("Domeny", domains_count)
-    c3.metric("Pokrycie AI", f"{metric_value(metrics, 'pokrycie_ai_pct')}%")
-    c4.metric("Places OK", f"{metric_value(metrics, 'places_ok_pct')}%")
-    c5.metric("Do weryfikacji", metric_value(metrics, "do_weryfikacji"))
+    c1.metric("Rekordy", f"{len(data):,}".replace(",", " "))
+    c2.metric("Domeny", f"{domains_count:,}".replace(",", " "))
+    c3.metric("Pokrycie AI", pct(category_metrics.get("ai_domains", 0), category_metrics.get("domains", 0)))
+    c4.metric("Places OK", pct(category_metrics.get("places_domains", 0), category_metrics.get("domains", 0)))
+    c5.metric("Do weryfikacji", review_count)
 
     c6, c7, c8, c9, c10 = st.columns(5)
     c6.metric("Branże główne", category_metrics.get("branches", 0))
@@ -3129,9 +3144,17 @@ a stare reguły są tylko punktem porównania.
         st.dataframe(review, width="stretch", height=460)
 
     with tab_export:
+        st.download_button(
+            "Pobierz aktualny widok (aktywna baza) XLSX",
+            xlsx_bytes({"Jakosc kategoryzacji": data_display}),
+            file_name="leadseason_jakosc_kategoryzacji_aktywna_baza.xlsx",
+            mime=OUTPUT_MIME_TYPES[".xlsx"],
+            width="stretch",
+        )
+        st.markdown("##### Historyczna próbka 500 domen (zamrożona)")
         if CATEGORY_REPORT_PATH.exists():
             st.download_button(
-                "Pobierz raport XLSX",
+                "Pobierz historyczny raport XLSX",
                 CATEGORY_REPORT_PATH.read_bytes(),
                 file_name=CATEGORY_REPORT_PATH.name,
                 mime=OUTPUT_MIME_TYPES[".xlsx"],
@@ -3139,7 +3162,7 @@ a stare reguły są tylko punktem porównania.
             )
         if CATEGORY_REPORT_CSV_PATH.exists():
             st.download_button(
-                "Pobierz czysty CSV",
+                "Pobierz historyczny CSV",
                 CATEGORY_REPORT_CSV_PATH.read_bytes(),
                 file_name=CATEGORY_REPORT_CSV_PATH.name,
                 mime=OUTPUT_MIME_TYPES[".csv"],
@@ -3152,7 +3175,8 @@ def render_senuto_view():
 
     matrix = load_senuto_matrix_frame()
     groups = load_senuto_groups_frame()
-    _, category_data = load_category_report_frames()
+    active_df, _ = auto_pick_dataset()
+    category_data, _ = enrich_with_category_report(active_df) if not active_df.empty else (active_df, 0)
 
     tab_matrix, tab_export_mcp, tab_import_mcp, tab_pending, tab_prompt = st.tabs([
         "Wyniki sezonowości",

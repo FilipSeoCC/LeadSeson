@@ -24,8 +24,8 @@ w ocenie merytorycznej.
 Doradcy stale szukają wiarygodnych wykonawców technicznych — szczególnie w AI, gdzie
 w Polsce niewiele podmiotów ma realne portfolio zrealizowanych wdrożeń.
 
-Pozycja AIOps: zrealizowane wdrożenia (WeNet, Focus Rent, Poltranspeed), własne produkty
-(LeadSeason, FlotaFlow), kompetencja procesowa i analiza ROI.
+Pozycja AIOps: zrealizowane wdrożenia w branży flotowej, transportowej i marketingowej,
+własne produkty (LeadSeason, FlotaFlow), kompetencja procesowa i analiza ROI.
 
 ## 3. Wpływ na sprzedaż — zmiana ramy rozmowy
 
@@ -81,7 +81,7 @@ Terminy naborów zmieniają się — weryfikować na parp.gov.pl przed każdą r
 
 ## 7. Pierwszy krok wdrożeniowy
 
-1. One-pager: „wykonawca techniczny wdrożeń AI — 3 zrealizowane projekty, gotowy do
+1. One-pager: „wykonawca techniczny wdrożeń AI — zrealizowane projekty, gotowy do
    współpracy przy wnioskach dotacyjnych"
 2. Lista 10-15 firm dotacyjnych (Wielkopolska + ogólnopolskie)
 3. Outreach, cel: 3-5 rozmów

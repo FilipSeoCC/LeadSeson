@@ -233,7 +233,42 @@ Przegląd publicznych repozytoriów — znaczna część pipeline'u jest już ro
 
 ---
 
-## 11. Kolejność wdrożenia
+## 11. Ekonomia i cele konwersji
+
+### Koszt warstwy głosowej — niższy niż zakładano
+Narracja audytu 2–3 min ≈ 2500–3000 znaków.
+- Plan Creator (22 USD / 100k znaków) → ok. 0,22 USD / 1000 znaków
+- **Jeden audyt ≈ 0,60 USD ≈ 2,40 zł**
+- 100k znaków/mies. → ~35–37 audytów
+- Flash v2.5 (~0,15 USD/1000 zn.) taniej, ale gorsza jakość narracji niż Multilingual v2
+
+Przy CAC 1200–1800 zł koszt głosu to **<0,2% kosztu pozyskania klienta** — pomijalny.
+
+**Wniosek operacyjny:** głos można przesunąć wcześniej w kolejności. Starter za 5 USD (30k znaków ≈ 11 audytów) wystarcza na test walidacyjny — można od razu testować mail + audio zamiast samego tekstu. Wideo zostaje na późniejszym etapie, bo tam kosztem są tygodnie pracy, nie dolary.
+
+### Cel konwersji — 20%, ale czego?
+Cel roboczy postawiony na poziomie 20%. Wymaga doprecyzowania metryki, bo różnica jest zasadnicza:
+
+- **20% reply rate na cold mailu** = trafienie w absolutny sufit kategorii (benchmark: 20% dotyczy ręcznego wideo Loom-style, które „źle się skaluje"). Możliwe na małej, świetnie wyselekcjonowanej próbce, ryzykowne jako założenie projektowe dla całego systemu
+- **20% na dalszych etapach lejka** = realne: odpowiedź → spotkanie to typowo 20–25%; rejestracja w gate'cie → rozmowa może być jeszcze wyższa, bo ci ludzie zostawili już telefon i zgodę
+
+### Rekomendowane podejście: liczyć wstecz od liczby umów
+Przykład przy 500 mailach/mies.:
+
+| Etap | Współczynnik | Wynik |
+|---|---|---|
+| Wysłane maile | — | 500 |
+| Odpowiedzi | 10% | 50 |
+| Rozmowy | 25% | 12–13 |
+| Umowy | 30% close | ~4 |
+
+To wynik zgodny z benchmarkiem 3–8 umów/mies. przy cold mailingu — **bez zakładania rekordów kategorii**. Ryzyko przy planowaniu na 20% reply rate: przy wyniku 8% (który jest bardzo dobry) model ekonomiczny się nie spina, mimo że system działa poprawnie.
+
+**Do rozstrzygnięcia:** która metryka jest celem — reply rate, wejścia w mikro-apkę, rejestracje za gate'em czy umowy.
+
+---
+
+## 12. Kolejność wdrożenia
 
 1. Baza danych + schemat leada (fundament)
 2. Moduł danych — fork/integracja `seonaut` + PageSpeed + Senuto, walidacja na 5–10 firmach
@@ -241,17 +276,17 @@ Przegląd publicznych repozytoriów — znaczna część pipeline'u jest już ro
 4. Dynamiczna mikro-apka z routingiem per-lead — zastępuje PDF jako główny format
 5. Insight-trigger jako nagłówek + progressive disclosure + gate ze zgodą
 6. Tracking zachowania → lead-scoring / tierowanie
-7. Test wysyłki (mail, mała próba) → walidacja konwersji **przed** inwestycją w głos/wideo
-8. Moduł głosu (ElevenLabs) dla Tier 2/3
-9. Moduł wideo (baza: `OpenMontage`) — dopiero po potwierdzeniu konwersji audyt+głos
+7. Moduł głosu (ElevenLabs) — przesunięty wcześniej ze względu na pomijalny koszt
+8. Test wysyłki (mail + audio, mała próba) → walidacja konwersji **przed** inwestycją w wideo
+9. Moduł wideo (baza: `OpenMontage`) — dopiero po potwierdzeniu konwersji
 10. Free konto jako warstwa retencyjna
 11. SMS jako drugi dotyk — wyłącznie do numerów ze zgodą z gate'a
-12. Agent głosowy dla najcieplejszych leadów, po konsultacji prawnej
+12. Agent głosowy dla najcieplejszych leadów
 13. n8n spinające całość + monitoring odpowiedzi
 
 ---
 
-## 12. Otwarta kwestia
+## 13. Otwarta kwestia
 
 WeNet posiada narzędzie **NetScanner** do pozyskiwania klientów, które działa skuteczniej niż inne kanały wewnętrzne. Do doprecyzowania: jaki mechanizm/kanał/dane odpowiadają za jego skuteczność — i czy projektowany system ma być komplementarny, czy w pełni niezależny pod ai-ops.pl.
 

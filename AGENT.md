@@ -201,7 +201,7 @@ Zapytania testowe generuj z `taxonomy.py` + lokalizacji leada, np. `"najlepszy {
 - Zakaz halucynacji: każda liczba musi pochodzić z `audit_raw`, nigdy z modelu. Jeśli brak danych → pomiń insight, nie zgaduj.
 - Nagłówek max 90 znaków, konkret + liczba, nigdy generyk („Twoja strona ma problemy" = źle)
 - Ton: ostrzeżenie przed stratą, nie sprzedaż
-- Porównanie do konkurencji zamsze gdy dostępne dane
+- Porównanie do konkurencji zawsze gdy dostępne dane
 
 **Definition of done:** dla 10 firm generuje się po 3–5 sensownych, niehalucynowanych insightów.
 
@@ -294,16 +294,26 @@ Generuj **wyłącznie dla Tier 3**. Hostuj samodzielnie z thumbnailem w mailu (n
 
 ## 7. Repozytoria do wykorzystania
 
-| Repo | Licencja | Rola | Sposób użycia |
-|---|---|---|---|
-| `StJudeWasHere/seonaut` | MIT | Crawler SEO | Osobny kontener w compose, integracja przez API |
-| `Auriti-Labs/geo-optimizer-skill` | — | AEO/GEO | Import jako moduł Python / MCP |
-| `calesthio/OpenMontage` | — | Wideo | Pipeline jako referencja, adaptacja pod audyt |
-| `omkarcloud/google-maps-scraper` | MIT | Dane GBP + sourcing | Ostrożnie — patrz §9 |
-| `seo-skills/seo-audit-skill` | — | 108 reguł audytowych | Źródło listy reguł, nie kodu |
-| `zubair-trabzada/ai-marketing-claude` | — | Generowanie raportów | Referencja promptów i struktury PDF |
+### 7.1 Zatwierdzone — używaj
 
-**Zawsze:** sprawdź plik LICENSE przed wpięciem kodu do produkcji. Brak licencji = brak prawa użycia, niezależnie od tego, że repo jest publiczne.
+| Repo | ⭐ | Licencja | Rola | Sposób użycia |
+|---|---|---|---|---|
+| `StJudeWasHere/seonaut` | 749 | MIT | Crawler SEO | Osobny kontener w compose, integracja przez API. **Nie przepisuj z Go na Pythona** |
+| `Auriti-Labs/geo-optimizer-skill` | 644 | — | AEO/GEO | Import jako moduł Python / MCP |
+| `calesthio/OpenMontage` | 45k | — | Wideo | Pipeline jako referencja, adaptacja pod audyt |
+| `omkarcloud/google-maps-scraper` | 3063 | MIT | Dane GBP + sourcing | Ostrożnie — patrz §9 |
+| `seo-skills/seo-audit-skill` | 336 | — | 108 reguł audytowych | Źródło listy reguł, nie kodu |
+| `zubair-trabzada/ai-marketing-claude` | 2266 | — | Generowanie raportów | Referencja promptów i struktury PDF |
+| `unifapi-agent/agents` | 534 | — | Agenci marketingowi przez MCP | Audyty SEO, GEO/AI-visibility, local SEO, brand monitoring — opcjonalne wzbogacenie collectorów |
+
+### 7.2 Opcjonalne — wymagają decyzji przed użyciem
+
+| Repo | ⭐ | Status licencji | Ocena | Warunek użycia |
+|---|---|---|---|---|
+| `viasite/site-audit-seo` | 301 | **NOASSERTION** (niestandardowa) | JS/Puppeteer, crawl + Lighthouse na wszystkich podstronach, output JSON/CSV/XLSX. Funkcjonalnie bardzo blisko naszego use-case'u — potencjalnie lepszy niż seonaut w części „Lighthouse na całej witrynie" | Zweryfikuj treść licencji w repo. Jeśli pozwala na użycie komercyjne → można wpiąć jako alternatywny/uzupełniający collector obok seonaut. Jeśli nie → tylko referencja architektoniczna |
+| `StanGirard/seo-audits-toolkit` | 804 | **brak pliku LICENSE** | Lighthouse + security headers + ekstraktory sitemap/keywords/images. Ostatni commit 2023 → nieutrzymywany | **Nie wpinaj kodu do produkcji** — brak licencji oznacza brak prawa użycia, mimo że repo jest publiczne. Traktuj wyłącznie jako inspirację architektoniczną i źródło pomysłów na zakres audytu. Ewentualnie: kontakt z autorem o doprecyzowanie licencji |
+
+**Zasada ogólna:** sprawdź plik LICENSE przed wpięciem kodu do produkcji. Brak licencji = brak prawa użycia, niezależnie od tego, że repo jest publiczne. Przy licencjach typu GPL/AGPL zweryfikuj implikacje dla kodu zamkniętego, zanim zintegrujesz.
 
 ---
 
@@ -335,6 +345,7 @@ Nie są to formalności do odhaczenia — mają realny wpływ na architekturę:
 - **Scraping Map Google:** narusza ToS Google. Bezpieczniej używać oficjalnego Places API do audytu konkretnej firmy niż scrapera do masowego budowania bazy. Jeśli używasz scrapera — rate limiting i mała skala.
 - **Cold mail:** opt-out w każdej wiadomości, osobna domena wysyłkowa (nie główna), warmup przed skalowaniem.
 - **Deliverability > wolumen:** spalona domena kończy projekt. Startuj od 20–50 maili dziennie.
+- **Licencje OSS:** patrz §7.2 — dwa repozytoria wymagają decyzji przed użyciem produkcyjnym.
 
 ---
 

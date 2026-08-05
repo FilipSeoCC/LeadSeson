@@ -36,6 +36,15 @@ def create_lead(db: Session, **fields) -> models.Lead:
     return lead
 
 
+def list_leads(db: Session, limit: int = 500) -> list[models.Lead]:
+    return (
+        db.query(models.Lead)
+        .order_by(models.Lead.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+
 def get_lead(db: Session, lead_id: str) -> models.Lead | None:
     return db.get(models.Lead, lead_id)
 

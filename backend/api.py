@@ -6,11 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from backend.auth import require_api_key
+from backend.dashboard import router as dashboard_router
 from backend.data_service import (
     BASE_DIR,
     JOBS_DIR,
@@ -55,18 +57,10 @@ app.add_middleware(
 # Vercel routes /api/* here, local uvicorn serves without that prefix.
 app.include_router(microapp_router)
 app.include_router(microapp_router, prefix="/api")
+app.include_router(dashboard_router)
+app.include_router(dashboard_router, prefix="/api")
 
 JOBS = {}
-
-
-def require_api_key(x_api_key: str | None = Header(default=None)):
-    expected = os.getenv("LEADSEASON_API_KEY", "")
-    if not expected:
-        # No key configured: auth is a no-op locally, but every write endpoint stays
-        # unprotected until LEADSEASON_API_KEY is set — required before any public deploy.
-        return
-    if x_api_key != expected:
-        raise HTTPException(status_code=401, detail="Nieprawidłowy lub brakujący X-API-Key.")
 
 
 LANDING_HTML = """

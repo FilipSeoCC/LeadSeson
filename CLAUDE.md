@@ -79,3 +79,19 @@ check which step you're implementing.
 A `leadseason-backend` entry (uvicorn on :8010) was added to the root-level
 `.claude/launch.json` (one directory above this repo, shared across all of Filip's local
 projects) to preview this app.
+
+**`backend/dashboard.py`** — operator dashboard for the `outreach/` system, at `/dashboard`
+(list of every Lead: company/domain, industry, a *derived* pipeline stage, tier, score, latest
+audit scores, consent yes/no) and `/dashboard/{lead_id}` (full history: audits, consents,
+score events, micro-app visits, voice narration with an inline player). Server-rendered,
+same reasoning as `backend/microapp.py` (no frontend toolchain). `Lead` has no `status`
+column (AGENT.md sekcja 4 specified one; never implemented) — the dashboard computes a
+stage label live from which related rows exist (audits → consents → outreach_events) rather
+than trusting a stored field that could drift. Two POST actions run synchronously and are
+gated by `require_api_key` (now in `backend/auth.py`, shared with `backend/api.py` to avoid
+a circular import): "Odpal audyt" (SEO on-page + AEO/GEO + Senuto row lookup, PageSpeed only
+if `GOOGLE_PAGESPEED_API_KEY` is set) and "Wygeneruj narrację głosową" (ElevenLabs, skipped
+gracefully with a flash message if `ELEVENLABS_API_KEY` is missing or the free-tier quota
+would be exceeded). Tests: `tests/test_dashboard.py`, isolated in-memory SQLite via FastAPI
+`dependency_overrides` on `outreach.db.get_db` — never touches the real dev
+`outreach/data/leadgen.db`.

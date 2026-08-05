@@ -121,6 +121,7 @@ PAGE_HEAD = """
   body { margin:0; min-height:100vh; font-family:Inter,Segoe UI,Arial,sans-serif; background:radial-gradient(circle at 20% 0%, rgba(251,146,60,.16), transparent 32%), var(--bg); color:var(--text); line-height:1.5; }
   main { width:min(1100px, calc(100vw - 32px)); margin:0 auto; padding:36px 0 96px; }
   a { color:var(--accent); }
+  a:focus-visible, .btn:focus-visible, tr td a:focus-visible { outline:3px solid var(--accent); outline-offset:2px; border-radius:4px; }
   .kicker { color:var(--accent); text-transform:uppercase; letter-spacing:.08em; font-size:12px; font-weight:800; }
   h1 { margin:8px 0 6px; font-size:clamp(24px,4vw,32px); }
   .sub { color:var(--muted); font-size:14px; margin:0 0 24px; }
@@ -137,9 +138,12 @@ PAGE_HEAD = """
   .kv { display:grid; grid-template-columns:140px 1fr; gap:6px 12px; font-size:13px; }
   .kv dt { color:var(--muted); }
   .kv dd { margin:0; }
-  .btn { display:inline-block; border:none; border-radius:999px; background:var(--accent); color:#1a0f05; font-size:13px; font-weight:700; padding:9px 16px; cursor:pointer; text-decoration:none; }
-  .btn:hover { background:#fdba74; }
+  .btn { display:inline-block; border:none; border-radius:999px; background:var(--accent); color:#1a0f05; font-size:13px; font-weight:700; padding:9px 16px; cursor:pointer; text-decoration:none; transition:background .2s ease-out, transform .15s ease-out, opacity .2s; }
+  .btn:hover:not([disabled]) { background:#fdba74; }
+  .btn:active:not([disabled]) { transform:scale(.97); }
   .btn[disabled] { opacity:.5; cursor:not-allowed; }
+  .btn .spinner { display:inline-block; width:12px; height:12px; margin-right:7px; border:2px solid rgba(26,15,5,.35); border-top-color:#1a0f05; border-radius:50%; vertical-align:-2px; animation:btn-spin .7s linear infinite; }
+  @keyframes btn-spin { to { transform:rotate(360deg); } }
   .btn-row { display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
   .flash { border-radius:10px; padding:10px 14px; font-size:13px; margin-bottom:18px; border:1px solid; }
   .flash.ok { background:rgba(34,197,94,.1); border-color:rgba(34,197,94,.4); color:#86efac; }
@@ -149,6 +153,7 @@ PAGE_HEAD = """
   .timeline li:first-child { border-top:none; }
   audio { width:100%; margin-top:8px; }
   .empty { color:var(--muted); font-size:13px; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
 </style>
 """
 
@@ -180,7 +185,7 @@ def _render_list_page(rows: list[dict], message: str | None, ok: str | None) -> 
   <td>{_tier_badge(r['tier'])}</td>
   <td>{r['score']:.0f}</td>
   <td>{html.escape(r['audits_summary']) or '<span class="empty">brak</span>'}</td>
-  <td>{'✅' if r['has_consent'] else '—'}</td>
+  <td>{_badge('Tak', '#22c55e') if r['has_consent'] else '<span class="muted">Nie</span>'}</td>
 </tr>"""
             for r in rows
         )
@@ -278,8 +283,12 @@ def _render_detail_page(
         <dt>Utworzono</dt><dd>{lead.created_at:%Y-%m-%d %H:%M}</dd>
       </dl>
       <div class="btn-row">
-        <form method="post" action="/dashboard/{lead.id}/run-audit"><button class="btn" type="submit">Odpal audyt (SEO+AEO/GEO+Senuto)</button></form>
-        <form method="post" action="/dashboard/{lead.id}/generate-voice"><button class="btn" type="submit">Wygeneruj narrację głosową</button></form>
+        <form class="action-form" method="post" action="/dashboard/{lead.id}/run-audit" data-loading-text="Sprawdzanie strony… (do 20 s)">
+          <button class="btn" type="submit">Odpal audyt (SEO+AEO/GEO+Senuto)</button>
+        </form>
+        <form class="action-form" method="post" action="/dashboard/{lead.id}/generate-voice" data-loading-text="Generowanie narracji…">
+          <button class="btn" type="submit">Wygeneruj narrację głosową</button>
+        </form>
       </div>
     </div>
 
@@ -311,6 +320,20 @@ def _render_detail_page(
     </div>
   </div>
 </div>
+<script>
+(function () {{
+  document.querySelectorAll("form.action-form").forEach(function (form) {{
+    form.addEventListener("submit", function () {{
+      var button = form.querySelector("button[type=submit]");
+      if (!button || button.disabled) return;
+      button.disabled = true;
+      button.dataset.originalText = button.textContent;
+      var loadingText = form.dataset.loadingText || "Przetwarzanie…";
+      button.innerHTML = '<span class="spinner" aria-hidden="true"></span>' + loadingText;
+    }});
+  }});
+}})();
+</script>
 """,
     )
 

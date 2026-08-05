@@ -286,10 +286,4 @@ To wynik zgodny z benchmarkiem 3–8 umów/mies. przy cold mailingu — **bez za
 
 ---
 
-## 13. Otwarta kwestia
-
-WeNet posiada narzędzie **NetScanner** do pozyskiwania klientów, które działa skuteczniej niż inne kanały wewnętrzne. Do doprecyzowania: jaki mechanizm/kanał/dane odpowiadają za jego skuteczność — i czy projektowany system ma być komplementarny, czy w pełni niezależny pod ai-ops.pl.
-
----
-
 *Dokument wygenerowany na podstawie sesji strategicznej z Claude jako punkt odniesienia przed rozpoczęciem prac wdrożeniowych.*

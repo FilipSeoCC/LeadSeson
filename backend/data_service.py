@@ -10,6 +10,10 @@ OUTPUT_DIR = BASE_DIR / "output"
 CACHE_DIR = BASE_DIR / ".leadseason_cache"
 UPLOAD_DIR = BASE_DIR / "uploads"
 JOBS_DIR = BASE_DIR / ".leadseason_jobs"
+# bulk_app.py (Streamlit) is the canonical source for Q4 ranking; it writes this file
+# to disk every time the Q4 view is opened. When present, the API serves it directly
+# instead of recomputing an independent ranking from the raw crawl output.
+STREAMLIT_Q4_BASE_PATH = OUTPUT_DIR / "leadseason_q4_customer_care_do_kontaktu.xlsx"
 Q4_VALUES = {"HIGH", "MEDIUM_HIGH"}
 BAD_SITE_HEALTH = {"FETCH_ERROR", "BLOCKED", "PLACEHOLDER", "INACTIVE", "PARKED", "NO_SIGNAL"}
 
@@ -179,7 +183,22 @@ def dashboard_summary(path=None):
     }
 
 
+def load_streamlit_q4_base():
+    if not STREAMLIT_Q4_BASE_PATH.exists():
+        return pd.DataFrame()
+    frame = pd.read_excel(STREAMLIT_Q4_BASE_PATH, sheet_name="Q4 do kontaktu", dtype=str, keep_default_na=False)
+    if "ranking_q4" in frame:
+        frame["ranking_q4"] = pd.to_numeric(frame["ranking_q4"], errors="coerce")
+        frame = frame.sort_values("ranking_q4")
+    return frame
+
+
 def q4_action_frame(path=None):
+    if path is None:
+        streamlit_base = load_streamlit_q4_base()
+        if not streamlit_base.empty:
+            return streamlit_base
+
     df, _ = load_output(path)
     data = prepare_frame(df)
     if data.empty:
@@ -232,16 +251,18 @@ def q4_summary(path=None):
         return {"records": 0, "domains": 0, "clients": 0, "tiers": {}, "branches": []}
     branches = []
     branch_col = "branza_glowna" if "branza_glowna" in frame else "detected_industry"
+    domain_col = "domain" if "domain" in frame else "domain_key"
     if branch_col in frame:
         grouped = frame.groupby(branch_col, dropna=False).agg(
-            records=("domain", "size"),
-            domains=("domain_key", "nunique"),
+            records=(branch_col, "size"),
+            domains=(domain_col, "nunique"),
         ).reset_index().sort_values("records", ascending=False).head(15)
         branches = grouped.rename(columns={branch_col: "branch"}).to_dict(orient="records")
+    tier_col = "action_tier" if "action_tier" in frame else ("priorytet_kontaktu" if "priorytet_kontaktu" in frame else None)
     return {
         "records": int(len(frame)),
         "domains": int(frame["domain_key"].replace("", pd.NA).dropna().nunique()) if "domain_key" in frame else 0,
         "clients": int(frame["id"].replace("", pd.NA).dropna().nunique()) if "id" in frame else 0,
-        "tiers": frame["action_tier"].value_counts().to_dict() if "action_tier" in frame else {},
+        "tiers": frame[tier_col].value_counts().to_dict() if tier_col else {},
         "branches": branches,
     }

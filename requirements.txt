@@ -6,5 +6,8 @@ streamlit
 uvicorn
 fastapi
 pydantic
+email-validator
 python-multipart
 playwright
+sqlalchemy
+geo-optimizer-skill

@@ -1,8 +1,11 @@
 import argparse
 import csv
 import hashlib
+import ipaddress
 import json
 import re
+import socket
+import ssl
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,6 +16,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
 
 from places_enrichment import enrich_record_with_places
 from seasonality_matrix import enrich_with_seasonality
@@ -25,6 +29,7 @@ DEFAULT_TIMEOUT = 15
 MAX_TEXT_CHARS = 8000
 MAX_HEADINGS = 30
 MAX_MENU_LINKS = 80
+MAX_REDIRECTS = 5
 
 DOMAIN_KEYS = ["domain", "domena", "url", "website", "strona", "adres_www", "www"]
 NIP_KEYS = ["nip", "tax_id", "taxid", "vat", "vat_id"]
@@ -124,7 +129,7 @@ SITE_HEALTH_PATTERNS = [
 INDUSTRY_RULES = [
     {
         "industry": "E-commerce / wyposażenie domu / porcelana",
-        "keywords": ["porcelana", "sklep internetowy", "hurtownia", "akcesoria kuchenne", "zastawa", "sztućce", "garnki", "patelnie", "szkło stołowe", "serwis obiadowy"],
+        "keywords": ["porcelana", "sklep internetowy", "akcesoria kuchenne", "zastawa", "sztućce", "garnki", "patelnie", "szkło stołowe", "serwis obiadowy"],
         "peak": "listopad-grudzień oraz sezon ślubny maj-wrzesień",
         "contact_start": "wrzesień-październik oraz marzec-kwiecień",
         "recommended_product": "SEO e-commerce / Google Ads produktowe / content sezonowy",
@@ -156,7 +161,7 @@ INDUSTRY_RULES = [
     },
     {
         "industry": "Gastronomia / restauracje / eventy",
-        "keywords": ["restauracja", "menu", "catering", "wesele", "wesela", "event", "imprezy", "komunia", "bankiet", "ogród", "taras"],
+        "keywords": ["restauracja", "catering", "wesele", "wesela", "event", "imprezy", "komunia", "bankiet", "ogród", "taras"],
         "peak": "maj-wrzesień oraz grudzień",
         "contact_start": "marzec-kwiecień oraz wrzesień-październik",
         "recommended_product": "SEO lokalne / Google Ads / Social Media / wizytówka Google",
@@ -461,12 +466,108 @@ def ensure_site_health_fields(result):
     return result
 
 
+def _is_public_ip(ip_str):
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def is_safe_url(url):
+    """Blocks SSRF: rejects non-http(s) schemes and hostnames resolving to private/loopback/link-local/cloud-metadata IPs."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror:
+        return False
+    return bool(infos) and all(_is_public_ip(info[4][0]) for info in infos)
+
+
+class _LegacySSLAdapter(HTTPAdapter):
+    """Relaxes OpenSSL 3.x's default rejection of legacy/unsafe TLS renegotiation.
+
+    Many small-business PL hosting setups still need this; without it requests
+    fails with SSLEOFError before a single byte is read from otherwise-healthy sites.
+    """
+
+    def init_poolmanager(self, *args, **kwargs):
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0)
+        try:
+            context.set_ciphers("DEFAULT@SECLEVEL=1")
+        except ssl.SSLError:
+            pass
+        kwargs["ssl_context"] = context
+        return super().init_poolmanager(*args, **kwargs)
+
+
+_legacy_ssl_session = None
+
+
+def legacy_ssl_session():
+    global _legacy_ssl_session
+    if _legacy_ssl_session is None:
+        session = requests.Session()
+        session.mount("https://", _LegacySSLAdapter())
+        _legacy_ssl_session = session
+    return _legacy_ssl_session
+
+
 def fetch_url(url, timeout, headers=None, wait_before=0):
     started = time.time()
     try:
         if wait_before:
             time.sleep(float(wait_before))
-        response = requests.get(url, headers=headers or HEADERS, timeout=(5, timeout), allow_redirects=True)
+        if not is_safe_url(url):
+            return {
+                "ok": False,
+                "status_code": None,
+                "final_url": url,
+                "html": "",
+                "error": "Blocked: target resolves to a non-public address",
+                "seconds": round(time.time() - started, 2),
+            }
+        current_url = url
+        response = None
+        getter = requests.get
+        for _ in range(MAX_REDIRECTS + 1):
+            try:
+                response = getter(current_url, headers=headers or HEADERS, timeout=(5, timeout), allow_redirects=False)
+            except requests.exceptions.SSLError:
+                if getter is requests.get:
+                    getter = legacy_ssl_session().get
+                    response = getter(current_url, headers=headers or HEADERS, timeout=(5, timeout), allow_redirects=False)
+                else:
+                    raise
+            if response.is_redirect or response.is_permanent_redirect:
+                next_url = urljoin(current_url, response.headers.get("location", ""))
+                if not is_safe_url(next_url):
+                    return {
+                        "ok": False,
+                        "status_code": response.status_code,
+                        "final_url": current_url,
+                        "html": "",
+                        "error": "Blocked: redirect target resolves to a non-public address",
+                        "seconds": round(time.time() - started, 2),
+                    }
+                current_url = next_url
+                continue
+            break
         content_type = response.headers.get("content-type", "")
         html = response.text if "html" in content_type.lower() or "<html" in response.text[:500].lower() else ""
         return {
@@ -491,6 +592,15 @@ def fetch_url(url, timeout, headers=None, wait_before=0):
 def fetch_url_browser(url, timeout, wait_after=10):
     started = time.time()
     try:
+        if not is_safe_url(url):
+            return {
+                "ok": False,
+                "status_code": None,
+                "final_url": url,
+                "html": "",
+                "error": "Blocked: target resolves to a non-public address",
+                "seconds": round(time.time() - started, 2),
+            }
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
@@ -666,6 +776,19 @@ def dedupe(items):
     return output
 
 
+# These short keywords are also common substrings of unrelated Polish words
+# (spa/spadek/spawanie, lekcje/kolekcje, kurs/konkurs, taras/zatarasować) - require
+# real word boundaries for them instead of a plain substring check.
+STRICT_BOUNDARY_KEYWORDS = {"spa", "lekcje", "kurs", "taras"}
+
+
+def _keyword_matches(kw, haystack):
+    if kw in STRICT_BOUNDARY_KEYWORDS:
+        pattern = r"(?<![a-ząćęłńóśźż])" + re.escape(kw) + r"(?![a-ząćęłńóśźż])"
+        return re.search(pattern, haystack) is not None
+    return kw in haystack
+
+
 def classify_industry(text):
     haystack = clean_text(text).lower()
     best = None
@@ -675,15 +798,15 @@ def classify_industry(text):
         weighted_hits = []
         for keyword in rule["keywords"]:
             kw = keyword.lower()
-            if kw in haystack:
-                weight = 3 if kw in haystack[:1000] else 1
+            if _keyword_matches(kw, haystack):
+                weight = 3 if _keyword_matches(kw, haystack[:1000]) else 1
                 weighted_hits.extend([keyword] * weight)
         if len(weighted_hits) > len(best_hits):
             best = rule
             best_hits = weighted_hits
 
     unique_hits = dedupe(best_hits)
-    if not best or (len(unique_hits) < 2 and len(best_hits) < 4):
+    if not best or (len(unique_hits) < 2 and len(best_hits) < 3):
         return {
             "detected_industry": "Nieokreślona",
             "industry_confidence": 0,

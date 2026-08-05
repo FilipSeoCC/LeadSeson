@@ -5,7 +5,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -23,10 +23,16 @@ from backend.data_service import (
     safe_input_path,
     safe_output_path,
 )
+from backend.microapp import router as microapp_router
 
 
 DEFAULT_WORKERS = 12
 DEFAULT_TIMEOUT = 15
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+UPLOAD_MAGIC_BYTES = {
+    ".xlsx": (b"PK\x03\x04",),
+    ".xls": (b"\xd0\xcf\x11\xe0",),
+}
 
 app = FastAPI(
     title="LeadSeason API",
@@ -43,7 +49,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mounted twice (bare + /api/ prefix) like every other route in this file --
+# Vercel routes /api/* here, local uvicorn serves without that prefix.
+app.include_router(microapp_router)
+app.include_router(microapp_router, prefix="/api")
+
 JOBS = {}
+
+
+def require_api_key(x_api_key: str | None = Header(default=None)):
+    expected = os.getenv("LEADSEASON_API_KEY", "")
+    if not expected:
+        # No key configured: auth is a no-op locally, but every write endpoint stays
+        # unprotected until LEADSEASON_API_KEY is set — required before any public deploy.
+        return
+    if x_api_key != expected:
+        raise HTTPException(status_code=401, detail="Nieprawidłowy lub brakujący X-API-Key.")
 
 
 LANDING_HTML = """
@@ -250,19 +271,50 @@ def download_q4_actions(file: str | None = Query(default=None)):
     )
 
 
-@app.post("/uploads")
+async def _read_upload_capped(file: UploadFile, max_bytes: int) -> bytes:
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Plik przekracza limit {max_bytes // (1024 * 1024)} MB.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _validate_upload_content(suffix: str, content: bytes):
+    if not content:
+        raise HTTPException(status_code=400, detail="Plik jest pusty.")
+    magic = UPLOAD_MAGIC_BYTES.get(suffix)
+    if magic and not content.startswith(magic):
+        raise HTTPException(status_code=400, detail=f"Zawartość pliku nie wygląda na prawidłowy {suffix.lstrip('.').upper()}.")
+    if suffix == ".xml" and not content.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"<"):
+        raise HTTPException(status_code=400, detail="Zawartość pliku nie wygląda na prawidłowy XML.")
+
+
+@app.post("/uploads", dependencies=[Depends(require_api_key)])
+@app.post("/api/uploads", dependencies=[Depends(require_api_key)])
 async def upload_input(file: UploadFile = File(...)):
     suffix = Path(file.filename).suffix.lower()
     if suffix not in {".xlsx", ".xls", ".csv", ".xml"}:
         raise HTTPException(status_code=400, detail="Obsługiwane formaty: XLSX, XLS, CSV, XML.")
+    content = await _read_upload_capped(file, MAX_UPLOAD_BYTES)
+    _validate_upload_content(suffix, content)
     UPLOAD_DIR.mkdir(exist_ok=True)
     safe_name = f"{uuid.uuid4().hex}_{Path(file.filename).name}"
     target = UPLOAD_DIR / safe_name
-    target.write_bytes(await file.read())
+    target.write_bytes(content)
     return {"name": file.filename, "stored_as": str(target.relative_to(BASE_DIR)), "size": target.stat().st_size}
 
 
-@app.post("/crawl/jobs")
+@app.post("/crawl/jobs", dependencies=[Depends(require_api_key)])
+@app.post("/api/crawl/jobs", dependencies=[Depends(require_api_key)])
 def create_crawl_job(request: CrawlRequest, background_tasks: BackgroundTasks):
     try:
         safe_input_path(request.input_path)
@@ -278,6 +330,7 @@ def create_crawl_job(request: CrawlRequest, background_tasks: BackgroundTasks):
 
 
 @app.get("/crawl/jobs/{job_id}")
+@app.get("/api/crawl/jobs/{job_id}")
 def get_crawl_job(job_id: str):
     job = _load_job(job_id)
     if not job:

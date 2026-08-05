@@ -32,3 +32,7 @@ B2B-LASER,B2B / produkcja przemysłowa,Cięcie / grawerowanie laserowe,Usługa p
 B2B-TWORZYWA,B2B / produkcja przemysłowa,Tworzywa sztuczne,Produkcja,Przetwórstwo tworzyw sztucznych,"tworzywa sztuczne|plastik|przetwórstwo",,"tworzywa sztuczne|przetwórstwo|formowanie rotacyjne",B2B,aktywna
 PRAWO-KANC,Prawo / kancelarie prawne,Kancelarie prawne,Usługi profesjonalne,Obsługa prawna,"adwokat|radca prawny|kancelaria|lawyer",lawyer,"adwokat|radca prawny|kancelaria adwokacka",Mieszany,aktywna
 KSIEG-BIURO,Księgowość / biura rachunkowe,Biura rachunkowe,Usługi profesjonalne,Obsługa księgowa,"biuro rachunkowe|księgowość|accounting",accounting,"biuro rachunkowe|księgowość|doradztwo podatkowe",B2B,aktywna
+FLOR-KWIAC,Kwiaciarnia / prezenty / okazje,Kwiaciarnie,Sprzedaż,Kwiaciarnia i bukiety okazjonalne,"kwiaciarnia|florysta|florist",florist,"kwiaciarnia|kwiaty|bukiety|florysta",B2C,aktywna
+FIT-KLUB,Fitness / sport / zdrowie,Kluby fitness i siłownie,Usługa cykliczna,Karnety i zajęcia fitness,"siłownia|klub fitness|gym",gym,"siłownia|klub fitness|karnet|trening",B2C,aktywna
+ECOM-MODA,E-commerce / moda,Sklep odzieżowy online,Sprzedaż online,Sprzedaż odzieży i akcesoriów,"sklep odzieżowy|clothing store|moda",clothing_store,"odzież|moda|ubrania|sklep odzieżowy",B2C,aktywna
+ECOM-ELEKTRO,E-commerce / elektronika,Sklep elektroniczny online,Sprzedaż online,Sprzedaż elektroniki i RTV/AGD,"sklep elektroniczny|electronics store|RTV AGD",electronics_store,"elektronika|RTV|AGD|sklep elektroniczny",B2C,aktywna

@@ -11,7 +11,7 @@ import streamlit as st
 
 from ai_classification import build_ai_batch, eligible_for_ai, jsonl_bytes, merge_ai_results, read_ai_results
 from bulk_crawler import DEFAULT_WORKERS, parse_input_records, run_bulk
-from seasonality_matrix import enrich_with_seasonality
+from seasonality_matrix import enrich_with_seasonality, lookup_by_industry
 
 
 APP_NAME = "LeadSeason"
@@ -959,6 +959,7 @@ def build_seasonal_leads(df, matrix, today=None):
     mrr_series = df[present["monthly_value"]].map(clean_number) if "monthly_value" in present else None
 
     rows = []
+    config_lookup_cache = {}
     for pos, (_, row) in enumerate(df.iterrows()):
         ai_branza = str(row.get("ai_branza_glowna") or "").strip() if has_ai else ""
         if has_ai and ai_branza.lower() not in NIEOKRESLONA_VALUES:
@@ -988,6 +989,14 @@ def build_seasonal_leads(df, matrix, today=None):
         item["podbranza"] = podbranza or "Nieokreślona"
         item["branza_zrodlo"] = branza_zrodlo
         item["branza_confidence"] = branza_confidence
+
+        if branza not in config_lookup_cache:
+            config_lookup_cache[branza] = lookup_by_industry(branza) if branza and branza != "Nieokreślona" else {}
+        config_match = config_lookup_cache[branza]
+        item["lead_reason"] = config_match.get("lead_reason", "")
+        item["call_script"] = config_match.get("call_script", "")
+        item["recommended_product"] = config_match.get("recommended_product", "")
+
         item["mrr"] = float(mrr_series.iloc[pos]) if mrr_series is not None and pd.notna(mrr_series.iloc[pos]) else 0.0
 
         if end_dates is not None and pd.notna(end_dates.iloc[pos]):
@@ -1063,19 +1072,27 @@ def build_seasonal_leads(df, matrix, today=None):
     return result.sort_values(["miesiecy_do_szczytu", "confidence_sezonowosci"], ascending=[True, False]).reset_index(drop=True)
 
 
+def q4_exclusion_window(today=None):
+    """H2 window (Jul 1 - Dec 31) of the current year: contracts ending in this range are excluded from the Q4 base."""
+    year = (today or date.today()).year
+    return pd.Timestamp(year=year, month=7, day=1), pd.Timestamp(year=year, month=12, day=31)
+
+
 def build_q4_customer_care_base_from_leads(leads, source_df=None, matched_from_report=0):
     if leads.empty:
         return pd.DataFrame(), {"matched_from_report": matched_from_report}
 
     q4 = leads[leads["kwartaly_szczytu"].astype(str).str.contains("Q4", na=False)].copy()
     q4["end_dt"] = pd.to_datetime(q4.get("end_date", ""), errors="coerce")
-    excluded_contract = q4["end_dt"].between(pd.Timestamp("2026-07-01"), pd.Timestamp("2026-12-31"), inclusive="both")
+    window_start, window_end = q4_exclusion_window()
+    excluded_contract = q4["end_dt"].between(window_start, window_end, inclusive="both")
     ready = q4[~excluded_contract].copy()
     excluded = q4[excluded_contract].copy()
 
-    ready["wykluczenie_umowa_lip_gru_2026"] = "NIE"
+    ready["wykluczenie_umowa_h2"] = "NIE"
     ready["status_zadluzenia"] = "BRAK_DANYCH_W_PLIKU"
     ready["rekomendacja_q4"] = "DO_KONTAKTU_Q4"
+    ready["next_action"] = ready.get("sugerowana_akcja", "")
     ready["powod_rekomendacji"] = ready.apply(
         lambda row: (
             f"Peak Q4: {row.get('sezon_peak_miesiace', '')}; "
@@ -1096,7 +1113,7 @@ def build_q4_customer_care_base_from_leads(leads, source_df=None, matched_from_r
         "rekordy_q4_przed_wykluczeniem": len(q4),
         "klienci_q4_przed_wykluczeniem": q4["id"].replace("", pd.NA).dropna().nunique() if "id" in q4 else 0,
         "domeny_q4_przed_wykluczeniem": q4["domain_key"].replace("", pd.NA).dropna().nunique() if "domain_key" in q4 else 0,
-        "wykluczone_umowy_lip_gru_2026": len(excluded),
+        "wykluczone_umowy_h2": len(excluded),
         "wykluczeni_klienci_lip_gru_2026": excluded["id"].replace("", pd.NA).dropna().nunique() if "id" in excluded else 0,
         "do_kontaktu_rekordy": len(ready),
         "do_kontaktu_klienci": ready[client_col].replace("", pd.NA).dropna().nunique() if client_col else 0,
@@ -1326,6 +1343,9 @@ def render_leads_view():
     q4_ready, q4_metrics = build_q4_customer_care_base_from_leads(leads, source_df=df, matched_from_report=matched_from_report)
     if not q4_ready.empty:
         q4_mrr_label = f"{q4_metrics.get('mrr_do_kontaktu', 0):,.0f} zł".replace(",", " ")
+        window_start, window_end = q4_exclusion_window()
+        window_label = f"{window_start.strftime('%Y-%m-%d')} do {window_end.strftime('%Y-%m-%d')}"
+        total_records_label = fmt_int(q4_metrics.get("rekordy_baza", 0))
         st.markdown(
             f"""
 <div class="decision-card">
@@ -1333,15 +1353,15 @@ def render_leads_view():
   <h3>Baza Q4 dla Customer Care jest gotowa do pracy</h3>
   <p>
     Reguła: bierzemy klientów z potwierdzonym pikiem sezonowości w Q4 i odcinamy umowy kończące się
-    od 2026-07-01 do 2026-12-31. Zadłużenia nie odcinamy, bo w aktualnym pliku nie ma takiej kolumny.
+    od {window_label}. Zadłużenia nie odcinamy, bo w aktualnym pliku nie ma takiej kolumny.
   </p>
   <div class="decision-grid">
     <div class="decision-item"><strong>{fmt_int(q4_metrics.get("do_kontaktu_klienci", 0))}</strong><span>klientów do kontaktu</span></div>
     <div class="decision-item"><strong>{fmt_int(q4_metrics.get("do_kontaktu_domeny", 0))}</strong><span>domen w kolejce Q4</span></div>
-    <div class="decision-item"><strong>{fmt_int(q4_metrics.get("wykluczone_umowy_lip_gru_2026", 0))}</strong><span>rekordów wykluczonych przez koniec umowy</span></div>
+    <div class="decision-item"><strong>{fmt_int(q4_metrics.get("wykluczone_umowy_h2", 0))}</strong><span>rekordów wykluczonych przez koniec umowy</span></div>
     <div class="decision-item"><strong>{q4_mrr_label}</strong><span>MRR w kolejce Q4</span></div>
   </div>
-  <div class="decision-note">Źródło: pełna baza 4266 rekordów + macierz sezonowości Senuto</div>
+  <div class="decision-note">Źródło: pełna baza {total_records_label} rekordów + macierz sezonowości Senuto</div>
 </div>
 """,
             unsafe_allow_html=True,
@@ -1349,9 +1369,12 @@ def render_leads_view():
         preview_cols = [
             "ranking_q4", "id", "account_owner", "company", "domain_key",
             "branza_glowna", "sezon_peak_miesiace", "confidence_sezonowosci",
-            "score_gotowosci", "mrr",
+            "score_gotowosci", "mrr", "lead_reason", "next_action",
         ]
         summary_df = pd.DataFrame([{"metryka": key, "wartosc": value} for key, value in q4_metrics.items()])
+        OUTPUT_DIR.mkdir(exist_ok=True)
+        Q4_CONTACT_BASE_PATH.write_bytes(xlsx_bytes({"Q4 do kontaktu": q4_ready, "Metryki": summary_df}))
+        q4_ready.to_csv(Q4_CONTACT_BASE_CSV_PATH, index=False, encoding="utf-8-sig")
         q4_preview = q4_ready.copy()
         if "mrr" in q4_preview:
             q4_preview["mrr"] = q4_preview["mrr"].map(lambda value: f"{float(value):,.0f} zł".replace(",", " ") if pd.notna(value) else "0 zł")
@@ -1372,6 +1395,8 @@ def render_leads_view():
                     "confidence_sezonowosci": "Pewność",
                     "score_gotowosci": "Score",
                     "mrr": "MRR",
+                    "lead_reason": "Dlaczego dzwonimy teraz?",
+                    "next_action": "Następny krok",
                 },
                 limit=14,
             )

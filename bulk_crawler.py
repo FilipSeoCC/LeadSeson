@@ -9,7 +9,7 @@ import ssl
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -120,6 +120,11 @@ SITE_HEALTH_PATTERNS = [
             "domain is parked",
             "buy this domain",
             "domena na sprzedaż",
+            "oferta sprzedaży domeny",
+            "cena domeny",
+            "kup domenę",
+            "domena do kupienia",
+            "aftermarket.pl",
             "this domain may be for sale",
             "sedo domain parking",
         ],
@@ -925,6 +930,41 @@ def merge_records(records, domain_results):
         row = {**record, **result}
         output.append(row)
     return output
+
+
+def load_debtor_domains(debtor_path, min_dpd=80, sheet_name="TOTAL LISTING"):
+    # Plik windykacyjny SEO - Dluznik Obsluga: naglowek jest w drugim wierszu arkusza
+    # (pierwszy wiersz to puste/dekoracyjne komorki), stad header=1.
+    debtors = pd.read_excel(debtor_path, sheet_name=sheet_name, header=1, dtype=str, keep_default_na=False)
+    dpd = pd.to_numeric(debtors.get("DPD", ""), errors="coerce")
+    over_threshold = debtors.loc[dpd > min_dpd, "DOMENA"].astype(str).str.strip().str.lower()
+    return {domain for domain in over_threshold if domain}
+
+
+def filter_places_candidates(df, today=None, debtor_domain_keys=None):
+    # Wyklucza umowy koncz-ace sie w H2 biezacego roku (lub juz zakonczone) i
+    # dluznikow, zanim ponosimy koszt Places API - ten sam warunek co
+    # wykluczenie z listy kontaktowej Q4 w build_q4_customer_care_base_from_leads.
+    if df.empty:
+        return df.copy()
+
+    today = today or date.today()
+    h2_start = pd.Timestamp(year=today.year, month=7, day=1)
+    h2_end = pd.Timestamp(year=today.year, month=12, day=31)
+    today_ts = pd.Timestamp(today)
+
+    end_dt = pd.to_datetime(df.get("end_date", ""), errors="coerce")
+    ending_in_h2 = end_dt.between(h2_start, h2_end, inclusive="both")
+    already_ended = end_dt.notna() & (end_dt < today_ts)
+    excluded_by_contract = ending_in_h2 | already_ended
+
+    if debtor_domain_keys:
+        domain_keys = df.get("domain_key", pd.Series("", index=df.index)).astype(str).str.strip().str.lower()
+        is_debtor = domain_keys.isin(debtor_domain_keys)
+    else:
+        is_debtor = pd.Series(False, index=df.index)
+
+    return df[~(excluded_by_contract | is_debtor)].copy()
 
 
 def apply_places_enrichment(rows, api_key="", cache_dir="cache/places", timeout=10, force=False):

@@ -17,7 +17,6 @@ DEFAULT_PLACES_FIELDS = [
     "places.primaryType",
     "places.types",
     "places.businessStatus",
-    "places.nationalPhoneNumber",
     "places.websiteUri",
 ]
 

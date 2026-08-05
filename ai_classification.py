@@ -49,6 +49,25 @@ AI_RESULT_FIELDS = [
 ]
 
 
+PLACES_RECLASS_CONTEXT_COLUMNS = AI_CONTEXT_COLUMNS + [
+    "places_address",
+    "places_match_confidence",
+    "places_match_reasons",
+    "ai_branza_glowna",
+    "ai_podbranza",
+]
+
+PLACES_RECLASS_INSTRUCTIONS = (
+    "Dane z Google Places (places_name, places_primary_type, places_address) "
+    "to GLOWNY dowod dla klasyfikacji branzy - pochodza z ustrukturyzowanej bazy Google "
+    "o realnej dzialalnosci firmy. Tresc strony WWW (title, meta_description, body_text_sample) "
+    "to dowod POMOCNICZY - moze byc niejednoznaczna lub SEO-tekstowa. "
+    "Istniejace pola ai_branza_glowna/ai_podbranza moga byc bledne (klasyfikowane wylacznie "
+    "z tresci strony) - nie traktuj ich jako zalozenia, ocen branze od nowa na podstawie "
+    "danych z Places w pierwszej kolejnosci."
+)
+
+
 def clean_for_prompt(value, limit=1400):
     text = str(value or "").replace("\x00", " ")
     text = " ".join(text.split())
@@ -108,6 +127,43 @@ def build_ai_batch(df, only_unclassified=True, limit=100, start=0):
             },
         }
         for column in AI_CONTEXT_COLUMNS:
+            if column in row:
+                item["context"][column] = clean_for_prompt(row.get(column))
+        records.append(item)
+    return records
+
+
+def eligible_for_places_reclass(row):
+    return str(row.get("places_status") or "").strip() == "OK"
+
+
+def build_places_reclass_batch(df, limit=1000, start=0):
+    records = []
+    working = df[df.apply(eligible_for_places_reclass, axis=1)]
+    if start:
+        working = working.iloc[int(start):]
+    if limit:
+        working = working.head(int(limit))
+
+    for _, row in working.iterrows():
+        item = {
+            "record_key": build_record_key(row),
+            "task": "classify_leadseason_industry_places_first",
+            "instructions": PLACES_RECLASS_INSTRUCTIONS,
+            "context": {},
+            "expected_output_schema": {
+                "record_key": "same as input",
+                "branza_glowna": "string",
+                "podbranza": "string",
+                "usluga_glowna": "string",
+                "model_b2b_b2c": "B2B | B2C | Mieszany | Nieokreslona",
+                "confidence": "integer 0-100",
+                "new_category_flag": "ISTNIEJACA | NOWA_BRANZA | NOWA_PODBRANZA | NOWA_USLUGA | BRAK_SYGNALU",
+                "evidence": "short evidence string",
+                "manual_review": "boolean",
+            },
+        }
+        for column in PLACES_RECLASS_CONTEXT_COLUMNS:
             if column in row:
                 item["context"][column] = clean_for_prompt(row.get(column))
         records.append(item)

@@ -11,3 +11,4 @@ python-multipart
 playwright
 sqlalchemy
 geo-optimizer-skill
+pytest

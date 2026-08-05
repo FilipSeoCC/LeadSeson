@@ -5,6 +5,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pandas as pd
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -15,6 +16,7 @@ from backend.data_service import (
     JOBS_DIR,
     OUTPUT_DIR,
     UPLOAD_DIR,
+    customer_care_export_frame,
     dashboard_summary,
     default_output_file,
     output_files,
@@ -264,6 +266,30 @@ def download_q4_actions(file: str | None = Query(default=None)):
     OUTPUT_DIR.mkdir(exist_ok=True)
     output_path = OUTPUT_DIR / "leadseason_api_q4_actions.xlsx"
     frame.to_excel(output_path, index=False)
+    return FileResponse(
+        output_path,
+        filename=output_path.name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.get("/customer-care/export.xlsx")
+@app.get("/api/customer-care/export.xlsx")
+def download_customer_care_export(file: str | None = Query(default=None)):
+    try:
+        path = safe_output_path(file) if file else None
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Nie ma takiego pliku output.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    sheets = customer_care_export_frame(path)
+    if not sheets:
+        raise HTTPException(status_code=404, detail="Brak danych do eksportu.")
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    output_path = OUTPUT_DIR / "leadseason_api_customer_care_export.xlsx"
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        for name, frame in sheets.items():
+            frame.to_excel(writer, sheet_name=name, index=False)
     return FileResponse(
         output_path,
         filename=output_path.name,

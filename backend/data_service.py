@@ -266,3 +266,11 @@ def q4_summary(path=None):
         "tiers": frame[tier_col].value_counts().to_dict() if tier_col else {},
         "branches": branches,
     }
+
+
+def customer_care_export_frame(path=None):
+    df, _ = load_output(path)
+    if df.empty:
+        return {}
+    from build_customer_care_export import build_customer_care_workbook
+    return build_customer_care_workbook(df)

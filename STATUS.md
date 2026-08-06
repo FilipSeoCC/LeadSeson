@@ -2,7 +2,7 @@
 
 Ten plik to bieżący stan repo, aktualizowany przez każdego agenta (Claude/Codex/inny), który tu pracuje. Cel: żeby kolejna sesja nie musiała odtwarzać kontekstu od zera i nie nadepnęła na coś, co już zrobił ktoś inny.
 
-**Ostatnia aktualizacja:** 2026-08-05, Claude (Claude Code) — dashboard operatora dodany, patrz sekcja poniżej.
+**Ostatnia aktualizacja:** 2026-08-05, Claude (Claude Code) — dashboard operatora wypchnięty na origin/main (`98b5c58`), branch w pełni zsynchronizowany. `python -m pytest tests/test_dashboard.py` → 5/5 przechodzi (~40s, realny audyt geo_optimizer, nie mock).
 
 ## Kontekst: co to jest to repo
 

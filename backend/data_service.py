@@ -251,7 +251,11 @@ def q4_summary(path=None):
         return {"records": 0, "domains": 0, "clients": 0, "tiers": {}, "branches": []}
     branches = []
     branch_col = "branza_glowna" if "branza_glowna" in frame else "detected_industry"
-    domain_col = "domain" if "domain" in frame else "domain_key"
+    # Prefer the canonical domain_key (scheme/www/trailing-slash normalized) so this
+    # per-branch count stays consistent with the top-level "domains" metric below,
+    # which already uses domain_key; "domain" (raw, un-deduplicated) is only a
+    # fallback for frames that don't carry domain_key at all.
+    domain_col = "domain_key" if "domain_key" in frame else "domain"
     if branch_col in frame:
         grouped = frame.groupby(branch_col, dropna=False).agg(
             records=(branch_col, "size"),

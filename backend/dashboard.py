@@ -343,7 +343,7 @@ def dashboard_list(request: Request, db: Session = Depends(get_db)):
     leads = repository.list_leads(db)
     rows = []
     for lead in leads:
-        audits = latest_audits_by_type(lead)
+        audits = latest_audits_by_type(lead, db)
         has_consent = any(c.revoked_at is None for c in lead.consents)
         has_outreach = len(lead.outreach_events) > 0
         summary = ", ".join(
@@ -378,7 +378,7 @@ def dashboard_detail(lead_id: str, request: Request, db: Session = Depends(get_d
     narrations = sorted(lead.voice_narrations, key=lambda n: n.created_at, reverse=True)
     has_consent = any(c.revoked_at is None for c in lead.consents)
     has_outreach = len(lead.outreach_events) > 0
-    status = _pipeline_status(lead, latest_audits_by_type(lead), has_consent, has_outreach)
+    status = _pipeline_status(lead, latest_audits_by_type(lead, db), has_consent, has_outreach)
     message = request.query_params.get("msg")
     ok = request.query_params.get("ok")
     return HTMLResponse(
@@ -454,7 +454,7 @@ def dashboard_generate_voice(lead_id: str, db: Session = Depends(get_db)):
     if lead is None:
         raise HTTPException(status_code=404, detail="Nie znaleziono leada.")
 
-    script_text = build_narration_script(lead)
+    script_text = build_narration_script(lead, db)
     try:
         usage = get_usage()
     except ElevenLabsConfigError as exc:

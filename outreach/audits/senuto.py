@@ -12,9 +12,13 @@ auth-gated flow, ten modul czyta juz istniejacy plik z tego workflow.
 Jesli plik nie istnieje, oznacza to ze workflow z bulk_app.py nie zostal
 jeszcze uruchomiony dla biezacej bazy klientow -- nie blad, brak sygnalu.
 """
+import sys
 from pathlib import Path
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from seasonality_matrix import normalize_key  # noqa: E402
 
 DEFAULT_MATRIX_PATH = Path(__file__).resolve().parent.parent.parent / "output" / "leadseason_macierz_sezonowosci_senuto.xlsx"
 
@@ -32,8 +36,12 @@ def load_senuto_row_for_industry(detected_industry: str, matrix_path: Path = DEF
     match_col = next((c for c in ("branza_glowna", "ai_branza_glowna") if c in df.columns), None)
     if match_col is None:
         return None
-    needle = detected_industry.strip().lower()
-    matches = df[df[match_col].str.strip().str.lower() == needle]
+    # normalize_key() (not a bare .strip().lower()) so Polish-diacritic
+    # differences between this industry string and the matrix's own spelling
+    # -- two independently-produced values (crawler taxonomy vs. manual
+    # Senuto workflow) -- don't silently fail to match.
+    needle = normalize_key(detected_industry)
+    matches = df[df[match_col].apply(normalize_key) == needle]
     if matches.empty:
         return None
     return matches.iloc[0].to_dict()

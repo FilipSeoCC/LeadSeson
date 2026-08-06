@@ -6,10 +6,17 @@ Prawa telekomunikacyjnego) must not fire without a live consent record. Any
 future sender for those channels should call this before dispatch, not
 re-implement the check.
 """
+import sys
+from pathlib import Path
+
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import models
 from .slug import slugify_company_name
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from bulk_crawler import domain_key  # noqa: E402
 
 
 def _unique_slug(db: Session, company_name: str, exclude_lead_id: str | None = None) -> str:
@@ -27,13 +34,35 @@ def _unique_slug(db: Session, company_name: str, exclude_lead_id: str | None = N
 
 
 def create_lead(db: Session, **fields) -> models.Lead:
-    if not fields.get("slug"):
-        fields["slug"] = _unique_slug(db, fields.get("company_name", ""))
-    lead = models.Lead(**fields)
-    db.add(lead)
-    db.commit()
-    db.refresh(lead)
-    return lead
+    """_unique_slug()'s pre-check is a fast path, not a guarantee: two concurrent
+    calls for the same company_name can both see a candidate slug as free before
+    either commits. If the pre-checked slug still collides at INSERT time, roll
+    back and pick a fresh one against the now-updated DB state instead of
+    letting the IntegrityError crash the request; a caller-supplied slug is
+    trusted as intentional and re-raised instead of silently changed.
+    """
+    if fields.get("domain"):
+        fields["domain"] = domain_key(fields["domain"])
+
+    explicit_slug = fields.get("slug")
+    company_name = fields.get("company_name", "")
+    candidate_slug = explicit_slug or _unique_slug(db, company_name)
+
+    attempts_left = 5
+    while True:
+        lead = models.Lead(**{**fields, "slug": candidate_slug})
+        db.add(lead)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            attempts_left -= 1
+            if explicit_slug or attempts_left <= 0:
+                raise
+            candidate_slug = _unique_slug(db, company_name)
+            continue
+        db.refresh(lead)
+        return lead
 
 
 def list_leads(db: Session, limit: int = 500) -> list[models.Lead]:
@@ -50,7 +79,10 @@ def get_lead(db: Session, lead_id: str) -> models.Lead | None:
 
 
 def get_lead_by_domain(db: Session, domain: str) -> models.Lead | None:
-    return db.query(models.Lead).filter(models.Lead.domain == domain).first()
+    """Compares against the same domain_key() form create_lead() now stores,
+    so https://example.pl/, example.pl, and https://www.example.pl/oferta
+    all resolve to the same Lead instead of creating duplicates."""
+    return db.query(models.Lead).filter(models.Lead.domain == domain_key(domain)).first()
 
 
 def get_lead_by_slug(db: Session, slug: str) -> models.Lead | None:
@@ -72,6 +104,33 @@ def backfill_slugs(db: Session) -> int:
         updated += 1
     if updated:
         db.commit()
+    return updated
+
+
+def backfill_domains(db: Session) -> int:
+    """One-time cleanup for Lead rows created before get_lead_by_domain()/
+    create_lead() started normalizing via domain_key(). Collapses any now-
+    duplicate domain_key values onto the oldest row (keeps its id/slug/audit
+    history) and re-points child rows before deleting the newer duplicates,
+    so no ConsentEvent/AuditResult/etc. is silently lost. Returns count of
+    Lead rows updated in place (not counting duplicates removed)."""
+    updated = 0
+    seen_by_key: dict[str, models.Lead] = {}
+    for lead in db.query(models.Lead).order_by(models.Lead.created_at.asc()).all():
+        normalized = domain_key(lead.domain)
+        canonical = seen_by_key.get(normalized)
+        if canonical is None:
+            if lead.domain != normalized:
+                lead.domain = normalized
+                updated += 1
+            seen_by_key[normalized] = lead
+            continue
+        for child_model in (models.AuditResult, models.ConsentEvent, models.OutreachEvent, models.LeadScoreEvent, models.MicroAppVisit, models.VoiceNarration):
+            db.query(child_model).filter(child_model.lead_id == lead.id).update(
+                {child_model.lead_id: canonical.id}, synchronize_session=False
+            )
+        db.delete(lead)
+    db.commit()
     return updated
 
 
@@ -124,7 +183,18 @@ def record_score_event(db: Session, lead_id: str, score_delta: float, reason: st
     lead = get_lead(db, lead_id)
     if lead is None:
         raise ValueError(f"Nieznany lead_id: {lead_id}")
-    lead.lead_score += score_delta
+
+    # Atomic "SET lead_score = lead_score + delta" at the DB level, not a Python
+    # read-modify-write -- two concurrent calls for the same lead_id (e.g. a
+    # gate retry racing the original request) would otherwise both read the
+    # same starting value and the second commit would silently drop one
+    # increment even though both LeadScoreEvent audit rows got inserted.
+    db.query(models.Lead).filter(models.Lead.id == lead_id).update(
+        {models.Lead.lead_score: models.Lead.lead_score + score_delta},
+        synchronize_session=False,
+    )
+    db.refresh(lead)
+
     event = models.LeadScoreEvent(
         lead_id=lead_id,
         score_delta=score_delta,

@@ -9,19 +9,22 @@ description, naglowki, canonical, robots.txt, sitemap.xml, atrybuty alt,
 viewport/RWD. To NIE jest port kodu seonaut -- niezalezna implementacja,
 zeby uniknac pytan o licencje przy komercyjnym uzyciu.
 
-Reuses bulk_crawler.is_safe_url() for SSRF protection -- domains here can
-come from user-uploaded CRM files just like the main crawler, same threat
-model applies.
+Fetches through bulk_crawler.fetch_url() rather than plain requests.get() --
+domains here can come from user-uploaded CRM files just like the main
+crawler, same SSRF threat model applies, and fetch_url() is the one place in
+this repo that re-validates is_safe_url() on every redirect hop (a bare
+requests.get(..., allow_redirects=True) only checks the original URL, so a
+server-controlled redirect to a private/cloud-metadata address would sail
+through unchecked).
 """
 import sys
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-import requests
 from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from bulk_crawler import is_safe_url  # noqa: E402
+from bulk_crawler import fetch_url  # noqa: E402
 
 DEFAULT_TIMEOUT = 10
 USER_AGENT = "Mozilla/5.0 (compatible; LeadSeasonAuditBot/1.0; +https://ai-ops.pl)"
@@ -46,17 +49,16 @@ def run_onpage_audit(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
     """Fetch `url` and score it against a fixed set of on-page SEO checks.
 
     Returns {"score": float 0-100, "issues": [str, ...], "checks": {...}, "final_url": str}.
-    Raises ValueError if the URL is blocked by the SSRF guard, and
-    requests.RequestException if the initial fetch fails -- caller decides
-    how to record that as a failed audit.
+    Raises ValueError if the URL (or any redirect hop) is blocked by the SSRF
+    guard, or if the fetch otherwise fails -- caller decides how to record
+    that as a failed audit.
     """
-    if not is_safe_url(url):
-        raise ValueError(f"Blocked: {url} resolves to a non-public address")
+    result = fetch_url(url, timeout, headers={"User-Agent": USER_AGENT})
+    if not result["ok"]:
+        raise ValueError(result["error"] or f"Fetch failed for {url}")
 
-    resp = requests.get(url, timeout=timeout, headers={"User-Agent": USER_AGENT}, allow_redirects=True)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    parsed = urlparse(resp.url)
+    soup = BeautifulSoup(result["html"], "html.parser")
+    parsed = urlparse(result["final_url"])
     origin = f"{parsed.scheme}://{parsed.netloc}"
 
     issues = []
@@ -112,17 +114,16 @@ def run_onpage_audit(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
     if not checks["has_viewport_meta"]:
         issues.append("Brak meta viewport (mozliwy brak RWD).")
 
-    return {"score": _score_from_checks(checks), "issues": issues, "checks": checks, "final_url": resp.url}
+    return {"score": _score_from_checks(checks), "issues": issues, "checks": checks, "final_url": result["final_url"]}
 
 
 def _url_returns_200(url: str, timeout: int) -> bool:
-    if not is_safe_url(url):
-        return False
-    try:
-        resp = requests.get(url, timeout=timeout, headers={"User-Agent": USER_AGENT})
-        return resp.status_code == 200
-    except requests.RequestException:
-        return False
+    # Check status_code directly, not result["ok"] -- fetch_url() only sets ok=True
+    # for responses it recognizes as HTML, but robots.txt/sitemap.xml are
+    # text/plain and XML respectively, so ok would always be False for them
+    # even when they exist and return 200.
+    result = fetch_url(url, timeout, headers={"User-Agent": USER_AGENT})
+    return result["status_code"] == 200
 
 
 def _score_from_checks(checks: dict) -> float:

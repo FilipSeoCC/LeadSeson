@@ -573,6 +573,21 @@ def fetch_url(url, timeout, headers=None, wait_before=0):
                 current_url = next_url
                 continue
             break
+        else:
+            # Loop exhausted MAX_REDIRECTS+1 attempts without ever hitting the
+            # `break` above (still a redirect on the last attempt). Without this,
+            # `response` falls through as the last 3xx object: response.ok is True
+            # for any status <400, so the final return below would produce
+            # ok=False (empty html) paired with error="" (response.ok was True) --
+            # a failure with no diagnostic message.
+            return {
+                "ok": False,
+                "status_code": response.status_code if response is not None else None,
+                "final_url": current_url,
+                "html": "",
+                "error": f"Too many redirects (>{MAX_REDIRECTS})",
+                "seconds": round(time.time() - started, 2),
+            }
         content_type = response.headers.get("content-type", "")
         html = response.text if "html" in content_type.lower() or "<html" in response.text[:500].lower() else ""
         return {

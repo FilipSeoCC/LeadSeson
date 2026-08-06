@@ -11,6 +11,8 @@ w outreach/voice/elevenlabs_tts.py -- ten modul konsumuje zwykly str.
 Cel dlugosci z sekcji 11: 2-3 min ~ 2500-3000 znakow. Rzeczywista dlugosc
 zalezy od tego, ile audytow ma dany lead -- to miekki cel, nie twardy limit.
 """
+from sqlalchemy.orm import Session
+
 from outreach import models
 from outreach.audit_utils import latest_audits_by_type
 
@@ -40,9 +42,9 @@ def _score_comment(score: float) -> str:
     return "to wynik, który wymaga pilnej uwagi"
 
 
-def build_narration_script(lead: models.Lead) -> str:
+def build_narration_script(lead: models.Lead, db: Session | None = None) -> str:
     """Buduje tekst narracji po polsku, gotowy do syntezy TTS."""
-    audits = latest_audits_by_type(lead)
+    audits = latest_audits_by_type(lead, db)
     parts = [
         f"Dzień dobry. Przygotowaliśmy dla firmy {lead.company_name} krótki audyt widoczności online.",
     ]

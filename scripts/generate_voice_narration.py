@@ -47,7 +47,7 @@ def main():
         print(f"Brak leada o slug={args.slug!r}.")
         return
 
-    script_text = build_narration_script(lead)
+    script_text = build_narration_script(lead, db)
     print(f"--- Narracja dla {lead.company_name} ({len(script_text)} znakow) ---")
     print(script_text)
     print("---")

@@ -118,8 +118,8 @@ def _locked_report_html(lead: models.Lead, audits: dict[str, models.AuditResult]
     return "\n".join(sections)
 
 
-def _render_page(lead: models.Lead) -> str:
-    audits = latest_audits_by_type(lead)
+def _render_page(lead: models.Lead, db: Session) -> str:
+    audits = latest_audits_by_type(lead, db)
     hook = _pick_hook(lead, audits)
     company = html.escape(lead.company_name)
     hook_bar = _score_bar(hook["metric_label"], hook["score"]) if hook["score"] is not None else ""
@@ -284,7 +284,7 @@ def audyt_page(slug: str, db: Session = Depends(get_db)):
     lead = repository.get_lead_by_slug(db, slug)
     if lead is None:
         raise HTTPException(status_code=404, detail="Nie znaleziono audytu dla tego adresu.")
-    return HTMLResponse(_render_page(lead))
+    return HTMLResponse(_render_page(lead, db))
 
 
 @router.post("/audyt/{slug}/track")
@@ -298,28 +298,42 @@ def audyt_track(slug: str, payload: TrackEvent, db: Session = Depends(get_db)):
 
 @router.post("/audyt/{slug}/gate")
 def audyt_gate(slug: str, payload: GateSubmission, request: Request, db: Session = Depends(get_db)):
+    """Idempotent by design (retries/double-clicks must not duplicate state):
+
+    - consent is recorded (and committed) BEFORE contact PII is ever staged/
+      committed, so a failure between the two steps can never leave contact
+      info persisted without a backing ConsentEvent
+    - has_valid_consent()/lead.tier checks make each side effect a no-op if
+      it already happened, so a resubmitted POST doesn't add a second
+      ConsentEvent or a second +REGISTRATION_SCORE_BONUS
+    """
     if not payload.consent:
         raise HTTPException(status_code=400, detail="Zgoda jest wymagana, żeby odblokować pełny raport.")
     lead = repository.get_lead_by_slug(db, slug)
     if lead is None:
         raise HTTPException(status_code=404, detail="Nie znaleziono leada.")
 
+    if not repository.has_valid_consent(db, lead.id, "contact_phone_sms"):
+        repository.record_consent(
+            db,
+            lead.id,
+            "contact_phone_sms",
+            consent_text=CONSENT_TEXT,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+
     lead.contact_email = payload.email
     lead.contact_phone = payload.phone
-    lead.tier = max(lead.tier, REGISTRATION_TIER)
     lead.updated_at = datetime.now(timezone.utc)
-    db.commit()
+    if lead.tier < REGISTRATION_TIER:
+        lead.tier = REGISTRATION_TIER
+        db.commit()
+        repository.record_score_event(db, lead.id, REGISTRATION_SCORE_BONUS, "registered_via_gate")
+    else:
+        db.commit()
 
-    repository.record_consent(
-        db,
-        lead.id,
-        "contact_phone_sms",
-        consent_text=CONSENT_TEXT,
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-    )
-    repository.record_score_event(db, lead.id, REGISTRATION_SCORE_BONUS, "registered_via_gate")
     repository.record_microapp_visit(db, lead.id, payload.session_id, "gate_submitted", None)
 
-    audits = latest_audits_by_type(lead)
+    audits = latest_audits_by_type(lead, db)
     return {"ok": True, "report_html": _locked_report_html(lead, audits)}

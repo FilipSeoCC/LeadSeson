@@ -2,7 +2,7 @@
 
 Ten plik to bieżący stan repo, aktualizowany przez każdego agenta (Claude/Codex/inny), który tu pracuje. Cel: żeby kolejna sesja nie musiała odtwarzać kontekstu od zera i nie nadepnęła na coś, co już zrobił ktoś inny.
 
-**Ostatnia aktualizacja:** 2026-08-05, Claude (Claude Code) — Priorytet #2 (findings z code review) ZROBIONY i wypchnięty (`81588b9`). Pełny zestaw testów: `python -m pytest tests/ -q` → 37/37 przechodzi.
+**Ostatnia aktualizacja:** 2026-08-06, Claude (Claude Code) — Krok 6 (infrastruktura wysyłki, `outreach/send/`) ZROBIONY i wypchnięty (`e60f747`). Zweryfikowany REALNĄ wysyłką przez Resend na własny adres usera (nie na realnego leada). Dev DB wyczyszczona z danych testowych "Andruszkiewicz Aleksander" (artefakt jakości danych z CSV). Pełny zestaw testów: 37/37 przechodzi.
 
 ## Kontekst: co to jest to repo
 
@@ -56,8 +56,18 @@ Commit: `3705eb7` na `main` (obejmuje też niepowiązane zmiany sprzed tej sesji
 **Wydajność — NAPRAWIONE:**
 - `outreach/audit_utils.py::latest_audits_by_type()` — przyjmuje opcjonalny `db: Session`, wtedy odpytuje tylko najnowszy wiersz per `audit_type` (subquery z `max(created_at)`) zamiast ładować całą historię audytów. Przełączone wszystkie 5 miejsc wywołania (`backend/microapp.py` x3, `backend/dashboard.py` x2, `outreach/voice/script.py`). Zweryfikowane: identyczny wynik jak stara ścieżka.
 
+## ✅ Krok 6 ZROBIONY (2026-08-06): infrastruktura wysyłki (`outreach/send/`)
+
+- `email.py` — klient Resend (`RESEND_API_KEY`, ten sam dostawca co `startupai`).
+- `outreach_email.py` — buduje temat/HTML z tego samego `pick_hook()` co mikro-apka (przeniesiony do `outreach/audit_utils.py`, żeby oba kanały nie rozjechały się w treści), dołącza narrację głosową jeśli istnieje, zawsze loguje próbę jako `OutreachEvent`.
+- `scripts/send_outreach_email.py --slug ... --to ... [--dry-run]` + akcja w dashboardzie (pole na adres, nie wypełnione automatycznie — to infrastruktura testowa, nie masowa wysyłka).
+- **Zweryfikowane REALNĄ wysyłką** przez Resend na własny adres użytkownika (Resend id potwierdzone), nie na realnego leada — sekcja 9 (RODO/cold-mail) wciąż wymaga osobnej decyzji przed wysyłką do prawdziwych firm.
+- Przy okazji wyczyszczono dev DB z 8 leadów testowych o błędnej nazwie "Andruszkiewicz Aleksander" (artefakt danych z `output/full_test_50.csv` — pole `company` trzymało nazwisko właściciela konta, nie nazwę firmy) i utworzono jednego czystego leada testowego (`HTS Klimatyzacja`, domena hts.com.pl) do weryfikacji.
+
+**Drobna, nienaprawiona usterka treści** (nie w logice, w copy): nagłówek dla ścieżki SEO w `pick_hook()` (`outreach/audit_utils.py`) mówi "Znaleźliśmy konkretne braki" nawet przy wyniku 100/100 bez żadnych problemów — kosmetyczne, do poprawy przy okazji.
+
 ## Jak kontynuować
 
 1. Sprawdź `git status`/`git log` — repo jest aktywnie współdzielone z innymi sesjami/agentami.
-2. Kroki 1-5 + dashboard + wszystkie code-review findings są gotowe i na origin/main. Kolejny naturalny krok: kroki 6+ z `STRATEGIA_SYSTEM_POZYSKIWANIA_LEADOW.md` (test wysyłki mail+audio na małej próbie, moduł wideo, orkiestracja n8n) — nierozpoczęte.
+2. Kroki 1-6 + dashboard + wszystkie code-review findings są gotowe i na origin/main. Kolejny naturalny krok: moduł wideo (`OpenMontage`, dopiero po potwierdzeniu konwersji), klonowanie głosu (Instant Voice Cloning, plan Starter 5 USD), orkiestracja n8n — nierozpoczęte. Realna kampania wysyłkowa na prawdziwych leadach wymaga osobnej decyzji usera o zakresie/zgodach (sekcja 9).
 3. Nie commituj/pushuj bez wyraźnej prośby użytkownika.

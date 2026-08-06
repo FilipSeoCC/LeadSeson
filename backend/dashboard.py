@@ -14,17 +14,19 @@ Routes (montowane w backend/api.py pod "" i "/api", jak wszystko inne):
   POST /dashboard/{lead_id}/run-audit    -- odpala SEO+AEO/GEO+Senuto(+PageSpeed
                                              jesli klucz jest) synchronicznie
   POST /dashboard/{lead_id}/generate-voice -- buduje i syntetyzuje narracje
+  POST /dashboard/{lead_id}/send-email   -- wysyla mail outreachowy (Resend),
+                                             dolacza narracje audio jesli jest
   GET  /dashboard/{lead_id}/audio        -- serwuje najnowszy plik audio
 
-Akcje (run-audit, generate-voice) sa za require_api_key, jak /uploads i
-/crawl/jobs w backend/api.py -- to same, jedyne mutujace endpointy w tym
-routerze. Widoki listy/szczegolow sa otwarte, jak reszta GET-ow w tym API.
+Akcje (run-audit, generate-voice, send-email) sa za require_api_key, jak
+/uploads i /crawl/jobs w backend/api.py -- to same, jedyne mutujace endpointy
+w tym routerze. Widoki listy/szczegolow sa otwarte, jak reszta GET-ow w tym API.
 """
 import html
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -44,6 +46,7 @@ from outreach.voice.elevenlabs_tts import (
     get_usage,
     synthesize_narration,
 )
+from outreach.send.outreach_email import send_outreach_email_for_lead
 from outreach.voice.script import build_narration_script
 
 router = APIRouter()
@@ -138,6 +141,8 @@ PAGE_HEAD = """
   .kv { display:grid; grid-template-columns:140px 1fr; gap:6px 12px; font-size:13px; }
   .kv dt { color:var(--muted); }
   .kv dd { margin:0; }
+  .field { min-height:38px; padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:rgba(255,255,255,.04); color:var(--text); font-size:13px; }
+  .field:focus-visible { outline:3px solid var(--accent); outline-offset:1px; }
   .btn { display:inline-block; border:none; border-radius:999px; background:var(--accent); color:#1a0f05; font-size:13px; font-weight:700; padding:9px 16px; cursor:pointer; text-decoration:none; transition:background .2s ease-out, transform .15s ease-out, opacity .2s; }
   .btn:hover:not([disabled]) { background:#fdba74; }
   .btn:active:not([disabled]) { transform:scale(.97); }
@@ -290,6 +295,10 @@ def _render_detail_page(
           <button class="btn" type="submit">Wygeneruj narrację głosową</button>
         </form>
       </div>
+      <form class="action-form" method="post" action="/dashboard/{lead.id}/send-email" data-loading-text="Wysyłanie…" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <input class="field" type="email" name="to_email" placeholder="adres@przyklad.pl (test na własny adres)" value="{html.escape(lead.contact_email or '')}" required style="flex:1;min-width:220px;" />
+        <button class="btn" type="submit">Wyślij mail outreachowy</button>
+      </form>
     </div>
 
     <div class="card">
@@ -486,6 +495,18 @@ def dashboard_generate_voice(lead_id: str, db: Session = Depends(get_db)):
     )
     msg = f"Wygenerowano narrację ({len(script_text)} znaków)."
     return _redirect_to_detail(lead_id, msg, "1")
+
+
+@router.post("/dashboard/{lead_id}/send-email", dependencies=[Depends(require_api_key)])
+def dashboard_send_email(lead_id: str, to_email: str = Form(...), db: Session = Depends(get_db)):
+    lead = repository.get_lead(db, lead_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Nie znaleziono leada.")
+
+    event = send_outreach_email_for_lead(db, lead, to_email)
+    if event.status == "sent":
+        return _redirect_to_detail(lead_id, f"Wysłano mail do {to_email} (Resend id={event.content_ref}).", "1")
+    return _redirect_to_detail(lead_id, f"Nie udało się wysłać: {event.content_ref}", "0")
 
 
 @router.get("/dashboard/{lead_id}/audio")

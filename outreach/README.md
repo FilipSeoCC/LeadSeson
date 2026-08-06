@@ -20,6 +20,8 @@ wideo → outreach → konwersja.
 | `audits/aeo_geo.py` | Audyt AEO/GEO (cytowalność w AI) przez prawdziwy pakiet PyPI `geo-optimizer-skill` (MIT) — bez kluczy API, ~15-20s/domena |
 | `voice/script.py` | Generator tekstu narracji (szablon Python, bez LLM) z danych audytu leada |
 | `voice/elevenlabs_tts.py` | Klient ElevenLabs TTS (**wymaga `ELEVENLABS_API_KEY`** + uprawnienia "Głosy: Przeczytane" na kluczu) |
+| `send/email.py` | Klient Resend (**wymaga `RESEND_API_KEY`**), ten sam dostawca co formularz audytu w repo `startupai` |
+| `send/outreach_email.py` | Buduje treść maila outreachowego (insight-trigger + link do `/audyt/{slug}`) i wysyła, dołączając narrację głosową jeśli istnieje; zawsze loguje próbę jako `OutreachEvent` |
 
 ## Mapowanie schematu na strategię
 
@@ -151,13 +153,41 @@ MP3, 502 znaki zużyte z limitu).
 wszystkich dotychczasowych syntez — porównaj z darmowym limitem przed
 większym testem wsadowym.
 
+## Wysyłka outreachowa (krok 6)
+
+`outreach/send/` — infrastruktura do testu wysyłki (mail+audio, sekcja 12
+krok 8/"6" w kolejności tego repo), **NIE do wysyłki na realnych leadów bez
+osobnej decyzji o zgodzie/RODO** (sekcja 9).
+
+- **`email.py`** — klient Resend (`send_email()`), ten sam dostawca co
+  formularz audytu w `startupai`. Wymaga `RESEND_API_KEY`; `RESEND_FROM_EMAIL`
+  opcjonalny (domyślnie `AI-Ops <kontakt@ai-ops.pl>`).
+- **`outreach_email.py`** — `build_outreach_email(lead, db)` (temat+HTML z
+  tego samego `pick_hook()` co mikro-apka, link do `/audyt/{slug}`) i
+  `send_outreach_email_for_lead(db, lead, to_email)`. Automatycznie dołącza
+  najnowszą narrację głosową jako załącznik jeśli istnieje dla leada
+  (przybliżenie Tier 2 z sekcji 4 bez czekania na osobny etap tierowania).
+  **Zawsze** loguje próbę jako `OutreachEvent(channel="email", status="sent"|
+  "failed")` — nawet przy błędzie, żeby mieć ślad audytowy. AI Act (sekcja 9):
+  `ai_generated=True`, `ai_disclosed=True`, jawna wzmianka w treści maila.
+- **`scripts/send_outreach_email.py --slug ... --to ... [--dry-run]`** —
+  `pick_hook()` w `outreach/audit_utils.py` (przeniesiony tu z
+  `backend/microapp.py`, żeby mikro-apka i mail używały tego samego haka).
+
+`MICROAPP_BASE_URL` (domyślnie `http://localhost:8010`) generuje link w
+mailu — ustawić na publiczny URL przy realnym wdrożeniu.
+
+Podpięte też jako akcja w dashboardzie (`POST /dashboard/{lead_id}/send-email`)
+z polem na adres — domyślnie puste, operator wpisuje adres testowy ręcznie.
+
 ## Co dalej (sekcja 12)
 
-Kroki 1–5 gotowe i zwalidowane (realną syntezą audio). Kolejne kroki (6+):
-test wysyłki (mail+audio) na małej próbie, moduł wideo (`OpenMontage`) dopiero
-po potwierdzeniu konwersji, klonowanie głosu (Instant Voice Cloning, plan
-Starter 5 USD) jeśli test na premade voice wypadnie dobrze, orkiestracja n8n
-spinająca całość.
+Kroki 1–6 gotowe. Krok 6 (wysyłka) zbudowany jako infrastruktura testowa —
+realny test na małej próbie wymaga decyzji usera o zakresie/zgodach przed
+wysyłką do prawdziwych leadów. Kolejne kroki: moduł wideo (`OpenMontage`)
+dopiero po potwierdzeniu konwersji, klonowanie głosu (Instant Voice Cloning,
+plan Starter 5 USD) jeśli test na premade voice wypadnie dobrze, orkiestracja
+n8n spinająca całość.
 
 `geo citations` (podkomenda pakietu `geo-optimizer-skill`, realne zapytania do
 ChatGPT/Perplexity/Anthropic sprawdzające czy marka jest faktycznie cytowana,

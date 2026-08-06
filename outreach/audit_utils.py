@@ -46,3 +46,44 @@ def latest_audits_by_type(lead: models.Lead, db: Session | None = None) -> dict[
         if current is None or audit.created_at >= current.created_at:
             latest[audit.audit_type] = audit
     return latest
+
+
+def pick_hook(lead: models.Lead, audits: dict[str, models.AuditResult]) -> dict:
+    """Insight-trigger headline (sekcja 7A) -- konkret, nie generyczne "oto Twoj audyt".
+
+    Priorytet z sekcji 6: AEO/GEO jako potencjalnie mocniejszy trigger niz
+    klasyczne SEO dla czesci segmentow -> sprobuj najpierw, potem sezonowosc
+    (rdzen LeadSeason), potem SEO on-page, na koncu generyczny fallback.
+
+    Shared by backend/microapp.py (mikro-apka) and outreach/send/ (temat i
+    naglowek maila outreachowego) -- ten sam hak, dwa kanaly.
+    """
+    aeo = audits.get("aeo_geo")
+    if aeo is not None and aeo.score is not None:
+        return {
+            "headline": f"Widoczność Twojej strony w AI: {aeo.score:.0f}/100",
+            "subline": "Sprawdziliśmy, czy ChatGPT, Perplexity i Google AI Overviews w ogóle cytują Twoją stronę.",
+            "score": aeo.score,
+            "metric_label": "Wynik AEO/GEO",
+        }
+    if lead.season_peak:
+        return {
+            "headline": f"Twój sezon ({lead.season_peak}) zaczyna nabierać tempa",
+            "subline": "Sprawdziliśmy Twoją widoczność zanim ruszy szczyt sezonu.",
+            "score": None,
+            "metric_label": None,
+        }
+    seo = audits.get("seo")
+    if seo is not None and seo.score is not None:
+        return {
+            "headline": f"Twój audyt SEO on-page: {seo.score:.0f}/100",
+            "subline": "Znaleźliśmy konkretne braki, które wpływają na Twoją widoczność w Google.",
+            "score": seo.score,
+            "metric_label": "Wynik SEO on-page",
+        }
+    return {
+        "headline": f"Przygotowaliśmy audyt dla {lead.company_name}",
+        "subline": "Zobacz, co sprawdziliśmy i co warto poprawić.",
+        "score": None,
+        "metric_label": None,
+    }

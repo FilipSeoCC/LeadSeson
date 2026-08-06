@@ -61,13 +61,17 @@ customer-acquisition pipeline described in `STRATEGIA_SYSTEM_POZYSKIWANIA_LEADOW
 seasonality module. It does **not** read from or write to `backend/data_service.py`'s
 CSV/XLSX Q4 pipeline — independent SQLAlchemy store (SQLite by default, `LEADGEN_DATABASE_URL`
 env var for Postgres). See `outreach/README.md` for the schema and `python -m outreach.init_db`
-to bootstrap it. Covers steps 1-5 of the strategy doc's section 12 rollout order: schema,
+to bootstrap it. Covers steps 1-6 of the strategy doc's section 12 rollout order: schema,
 `outreach/audits/` (on-page SEO, PageSpeed, AEO/GEO via the real `geo-optimizer-skill` PyPI
 package, Senuto matrix loader -- validated against real domains via
 `scripts/validate_audit_module.py`), `backend/microapp.py` (server-rendered per-lead audit
 page at `/audyt/{slug}` with progressive disclosure + consent gate, mounted into this app's
-router), and `outreach/voice/` (ElevenLabs TTS narration, validated with a real synthesis --
-see outreach/README.md for the full flow and a documented gotcha about stale voice_ids).
+router), `outreach/voice/` (ElevenLabs TTS narration, validated with a real synthesis --
+see outreach/README.md for the full flow and a documented gotcha about stale voice_ids), and
+`outreach/send/` (Resend email client + outreach message builder, attaches the latest voice
+narration when one exists, always logs an OutreachEvent even on failure). `pick_hook()` --
+the insight-trigger headline logic -- lives in `outreach/audit_utils.py`, shared by the
+micro-app and the outreach email so they never show a different hook for the same lead.
 PageSpeed needs `GOOGLE_PAGESPEED_API_KEY` (keyless quota is 0/day as of 2026). AEO/GEO
 audits take ~15-20s/domain (no API key needed) -- `geo citations` (paid live citation checks
 against ChatGPT/Perplexity APIs) is out of scope. ElevenLabs needs `ELEVENLABS_API_KEY` with
@@ -92,6 +96,9 @@ gated by `require_api_key` (now in `backend/auth.py`, shared with `backend/api.p
 a circular import): "Odpal audyt" (SEO on-page + AEO/GEO + Senuto row lookup, PageSpeed only
 if `GOOGLE_PAGESPEED_API_KEY` is set) and "Wygeneruj narrację głosową" (ElevenLabs, skipped
 gracefully with a flash message if `ELEVENLABS_API_KEY` is missing or the free-tier quota
-would be exceeded). Tests: `tests/test_dashboard.py`, isolated in-memory SQLite via FastAPI
+would be exceeded), and "Wyślij mail outreachowy" (Resend, requires `RESEND_API_KEY`, operator
+types the recipient address -- **not pre-filled for cold outreach**, this is test
+infrastructure per STRATEGIA_SYSTEM_POZYSKIWANIA_LEADOW.md sekcja 12 krok 6, not a bulk-send
+tool). Tests: `tests/test_dashboard.py`, isolated in-memory SQLite via FastAPI
 `dependency_overrides` on `outreach.db.get_db` — never touches the real dev
 `outreach/data/leadgen.db`.

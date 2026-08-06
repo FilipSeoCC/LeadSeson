@@ -26,7 +26,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from outreach import models, repository
-from outreach.audit_utils import latest_audits_by_type
+from outreach.audit_utils import latest_audits_by_type, pick_hook
 from outreach.db import get_db
 
 router = APIRouter()
@@ -58,44 +58,6 @@ class TrackEvent(BaseModel):
     event_data: dict | None = None
 
 
-def _pick_hook(lead: models.Lead, audits: dict[str, models.AuditResult]) -> dict:
-    """Insight-trigger headline (sekcja 7A) -- konkret, nie generyczne "oto Twoj audyt".
-
-    Priorytet z sekcji 6: AEO/GEO jako potencjalnie mocniejszy trigger niz
-    klasyczne SEO dla czesci segmentow -> sprobuj najpierw, potem sezonowosc
-    (rdzen LeadSeason), potem SEO on-page, na koncu generyczny fallback.
-    """
-    aeo = audits.get("aeo_geo")
-    if aeo is not None and aeo.score is not None:
-        return {
-            "headline": f"Widoczność Twojej strony w AI: {aeo.score:.0f}/100",
-            "subline": "Sprawdziliśmy, czy ChatGPT, Perplexity i Google AI Overviews w ogóle cytują Twoją stronę.",
-            "score": aeo.score,
-            "metric_label": "Wynik AEO/GEO",
-        }
-    if lead.season_peak:
-        return {
-            "headline": f"Twój sezon ({lead.season_peak}) zaczyna nabierać tempa",
-            "subline": "Sprawdziliśmy Twoją widoczność zanim ruszy szczyt sezonu.",
-            "score": None,
-            "metric_label": None,
-        }
-    seo = audits.get("seo")
-    if seo is not None and seo.score is not None:
-        return {
-            "headline": f"Twój audyt SEO on-page: {seo.score:.0f}/100",
-            "subline": "Znaleźliśmy konkretne braki, które wpływają na Twoją widoczność w Google.",
-            "score": seo.score,
-            "metric_label": "Wynik SEO on-page",
-        }
-    return {
-        "headline": f"Przygotowaliśmy audyt dla {lead.company_name}",
-        "subline": "Zobacz, co sprawdziliśmy i co warto poprawić.",
-        "score": None,
-        "metric_label": None,
-    }
-
-
 def _score_bar(label: str, score: float) -> str:
     pct = max(0.0, min(100.0, score))
     color = "#22c55e" if pct >= 70 else "#fb923c" if pct >= 40 else "#ef4444"
@@ -120,7 +82,7 @@ def _locked_report_html(lead: models.Lead, audits: dict[str, models.AuditResult]
 
 def _render_page(lead: models.Lead, db: Session) -> str:
     audits = latest_audits_by_type(lead, db)
-    hook = _pick_hook(lead, audits)
+    hook = pick_hook(lead, audits)
     company = html.escape(lead.company_name)
     hook_bar = _score_bar(hook["metric_label"], hook["score"]) if hook["score"] is not None else ""
 

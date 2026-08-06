@@ -2,7 +2,7 @@
 
 Ten plik to bieżący stan repo, aktualizowany przez każdego agenta (Claude/Codex/inny), który tu pracuje. Cel: żeby kolejna sesja nie musiała odtwarzać kontekstu od zera i nie nadepnęła na coś, co już zrobił ktoś inny.
 
-**Ostatnia aktualizacja:** 2026-08-05, Claude (Claude Code) — dashboard operatora wypchnięty na origin/main (`98b5c58`), branch w pełni zsynchronizowany. `python -m pytest tests/test_dashboard.py` → 5/5 przechodzi (~40s, realny audyt geo_optimizer, nie mock).
+**Ostatnia aktualizacja:** 2026-08-05, Claude (Claude Code) — Priorytet #2 (findings z code review) ZROBIONY i wypchnięty (`81588b9`). Pełny zestaw testów: `python -m pytest tests/ -q` → 37/37 przechodzi.
 
 ## Kontekst: co to jest to repo
 
@@ -34,30 +34,30 @@ Commit: `3705eb7` na `main` (obejmuje też niepowiązane zmiany sprzed tej sesji
 - Zweryfikowane end-to-end w realnej przeglądarce na PRAWDZIWYCH danych z wcześniejszych sesji (leady z `scripts/validate_audit_module.py`, w tym jeden zarejestrowany przez gate z prawdziwą narracją audio 574KB) — działa. Testy: `tests/test_dashboard.py` (5, izolowana in-memory SQLite przez `dependency_overrides`).
 - **Odkryte przy tej okazji, wizualnie**: lead `hts.com.pl` ma 3x zduplikowany `ConsentEvent` + 3x `+15` scoringu z tego samego gate'a — to dokładnie bug idempotencji z `backend/microapp.py::audyt_gate()` opisany w sekcji "🟡 Priorytet #2" poniżej, teraz widoczny na własne oczy, nie tylko w code review.
 
-## 🟡 Priorytet #2: naprawić findings z `/code-review` (commit `3705eb7`) — jeszcze NIE naprawione
+## ✅ Priorytet #2 ZROBIONY (2026-08-05): findings z `/code-review` (commit `3705eb7`)
 
-High-effort review (8 kątów + weryfikacja), 10 potwierdzonych (CONFIRMED) problemów. Nieposortowane wg pliku:
+9 z 10 potwierdzonych (CONFIRMED) problemów naprawionych w `81588b9`, 1 okazał się już nieaktualny. Wszystkie zweryfikowane realnym testem (nie tylko czytaniem kodu), pełny zestaw testów (37) przechodzi.
 
-**Bezpieczeństwo (najwyższy priorytet z tej listy):**
-- **`outreach/audits/seo_onpage.py:56,122`** — SSRF przez przekierowanie HTTP. `requests.get(..., allow_redirects=True)` nie rewaliduje `is_safe_url()` na każdym hopie przekierowania (w przeciwieństwie do `bulk_crawler.fetch_url()` w tym samym commicie, który to robi poprawnie manualną pętlą). Crawlowana domena może przekierować na `169.254.169.254` (cloud metadata) albo `localhost` i moduł to wykona bez drugiego sprawdzenia.
+**Bezpieczeństwo — NAPRAWIONE:**
+- `outreach/audits/seo_onpage.py` — teraz fetchuje przez `bulk_crawler.fetch_url()` (rewaliduje `is_safe_url()` na każdym hopie przekierowania) zamiast `requests.get(allow_redirects=True)`. Zweryfikowane atakiem: mockowy serwer przekierowujący na `169.254.169.254` — teraz blokowany.
 
-**Integralność danych / RODO (`backend/microapp.py`, `outreach/repository.py`):**
-- `backend/microapp.py` `audyt_gate()` (~linia 299) — brak idempotencji: ponowny submit formularza duplikuje `ConsentEvent` i dodaje `+15` do `lead_score` za każdym razem. `db.commit()` (linia 311) zapisuje `tier`/PII PRZED zapisaniem zgody (linia 313) — błąd bazy w tym oknie zostawia dane kontaktowe bez zgody.
-- `outreach/repository.py` `_unique_slug()`/`create_lead()` (~linia 15) — race condition check-then-insert, dwa równoczesne requesty dla tej samej nazwy firmy mogą crashnąć na `IntegrityError`.
-- `outreach/repository.py` `record_score_event()` (~linia 114) — odczyt-modyfikacja-zapis bez blokady, równoczesne wywołania mogą zgubić inkrement wyniku.
-- `outreach/repository.py` `get_lead_by_domain()`/`create_lead()` (~linia 39) — brak normalizacji domeny (istnieją `normalize_domain()` w `bulk_crawler.py` i `_normalize_domain()` w `data_service.py`, nieużyte) → duplikaty leadów dla tej samej firmy pod różnymi wariantami URL.
-- `outreach/audits/senuto.py:35` — dopasowanie branży przez `.strip().lower()` zamiast kanonicznego `normalize_key()` (NFKD, usuwa polskie diakrytyki) z `seasonality_matrix.py`/`taxonomy.py` → ciche brak-dopasowania przy różnicach w akcentach.
+**Integralność danych / RODO — NAPRAWIONE:**
+- `backend/microapp.py::audyt_gate()` — zgoda zapisywana PRZED PII, `has_valid_consent()`/`lead.tier` jako idempotency-guard. Zweryfikowane: 3x submit → 1 zgoda, 1 zdarzenie scoringu, score=15 (nie 45). Wyczyszczono istniejące duplikaty na `hts.com.pl` w dev DB.
+- `outreach/repository.py::create_lead()` — retry na `IntegrityError` przy kolizji sluga.
+- `outreach/repository.py::record_score_event()` — atomowy SQL `UPDATE` zamiast odczyt-modyfikacja-zapis w Pythonie.
+- `outreach/repository.py::get_lead_by_domain()`/`create_lead()` — normalizacja przez `bulk_crawler.domain_key()`. Dodano `backfill_domains()`, uruchomione na dev DB (8 leadów, 0 kolizji).
+- `outreach/audits/senuto.py` — dopasowanie przez `normalize_key()` (NFKD) zamiast `.strip().lower()`. Zweryfikowane: "Księgowość" dopasowuje "Ksiegowosc".
 
-**W kodzie sprzed tej sesji (nie napisane przeze mnie, ale w tym samym commicie):**
-- `backend/data_service.py:254` — `q4_summary()` liczy unikalne domeny po surowym polu `domain` zamiast kanonicznego `domain_key`, zawyżając liczniki per branża.
-- `bulk_app.py:1087` — `q4_exclusion_window()` wywoływane bez argumentów wewnątrz `build_q4_customer_care_base_from_leads`, więc parametr `today` przekazany do `build_seasonal_leads` nie dociera do okna wykluczeń kontraktów.
-- `bulk_crawler.py:573` — gdy pętla przekierowań wyczerpie `MAX_REDIRECTS=5`, `fetch_url()` zwraca `ok=False` z pustym `error=""` (bo `response.ok` jest `True` dla 3xx) — brak diagnostyki dlaczego się nie udało.
+**Kod sprzed tej sesji — NAPRAWIONE / już nieaktualne:**
+- `backend/data_service.py::q4_summary()` — przywrócony priorytet `domain_key` nad `domain`.
+- `bulk_crawler.py::fetch_url()` — opisowy błąd `"Too many redirects (>N)"` zamiast `ok=False, error=""`. Zweryfikowane mockiem pętli przekierowań.
+- `bulk_app.py`'s `q4_exclusion_window` + `today` — **już nieaktualne**: merge z drugą sesją wyeliminował osobną funkcję `q4_exclusion_window()`, `today` jest teraz bezpośrednim parametrem `build_q4_customer_care_base_from_leads()` i działa poprawnie (zweryfikowane bezpośrednim testem).
 
-**Wydajność:**
-- `outreach/audit_utils.py:9` `latest_audits_by_type()` — ładuje CAŁĄ historię audytów leada (razem z dużymi blobami `raw_data` JSON) przy każdym wejściu na `/audyt/{slug}` — publiczny hot path.
+**Wydajność — NAPRAWIONE:**
+- `outreach/audit_utils.py::latest_audits_by_type()` — przyjmuje opcjonalny `db: Session`, wtedy odpytuje tylko najnowszy wiersz per `audit_type` (subquery z `max(created_at)`) zamiast ładować całą historię audytów. Przełączone wszystkie 5 miejsc wywołania (`backend/microapp.py` x3, `backend/dashboard.py` x2, `outreach/voice/script.py`). Zweryfikowane: identyczny wynik jak stara ścieżka.
 
 ## Jak kontynuować
 
-1. Sprawdź `git status`/`git log` — może ktoś już to naprawił.
-2. Zdecyduj z userem: dashboard najpierw, czy najpierw poprawki (zwłaszcza SSRF) przed kolejnym pushem.
+1. Sprawdź `git status`/`git log` — repo jest aktywnie współdzielone z innymi sesjami/agentami.
+2. Kroki 1-5 + dashboard + wszystkie code-review findings są gotowe i na origin/main. Kolejny naturalny krok: kroki 6+ z `STRATEGIA_SYSTEM_POZYSKIWANIA_LEADOW.md` (test wysyłki mail+audio na małej próbie, moduł wideo, orkiestracja n8n) — nierozpoczęte.
 3. Nie commituj/pushuj bez wyraźnej prośby użytkownika.
